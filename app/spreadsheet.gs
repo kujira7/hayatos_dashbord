@@ -1,112 +1,67 @@
-function getSpreadsheetCsv() {
+function getDatasetCsv() {
   const totalStart = Date.now();
-  const file = getOnlySpreadsheetFileByName(SPREADSHEET_FOLDER_PATH, SPREADSHEET_NAME);
-
-  const openStart = Date.now();
-  const spreadsheet = SpreadsheetApp.openById(file.getId());
-  const metadataSheet = spreadsheet.getSheetByName(METADATA_SHEET_NAME);
-
-  if (!metadataSheet) {
-    throw new Error(`Metadata sheet not found. spreadsheet=${SPREADSHEET_NAME}, sheet=${METADATA_SHEET_NAME}`);
-  }
-
-  const metadata = readMetadata(metadataSheet);
-  const activeSheetName = ACTIVE_SHEET_NAME;
-  const sheet = spreadsheet.getSheetByName(activeSheetName);
-
-  if (!sheet) {
-    throw new Error(`Active sheet not found. spreadsheet=${SPREADSHEET_NAME}, sheet=${activeSheetName}`);
-  }
-
-  const openMs = Date.now() - openStart;
   const readStart = Date.now();
-  const values = sheet.getDataRange().getValues();
+  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
+  const csv = file.getBlob().getDataAsString();
+  const metadata = readMetadata();
   const readMs = Date.now() - readStart;
 
-  validateSheetValues(values, activeSheetName, UI_REQUIRED_COLUMNS);
-
-  const serializeStart = Date.now();
-  const csv = values.map((row) => row.map(formatCsvCell).join(',')).join('\n');
-  const csvBytes = Utilities.newBlob(csv, 'text/csv').getBytes().length;
-  const serializeMs = Date.now() - serializeStart;
-
-  if (csvBytes > MAX_CSV_BYTES) {
-    throw new Error(`CSV payload is too large. bytes=${csvBytes}, max=${MAX_CSV_BYTES}`);
-  }
+  validateCsv(csv, VIDEO_CSV_FILE_NAME);
+  const csvBytes = getCsvBytes(csv);
 
   return {
-    spreadsheet: {
+    csvFile: {
       id: file.getId(),
       name: file.getName(),
-      activeSheetName,
-      metadataSheetName: METADATA_SHEET_NAME,
       lastUpdated: file.getLastUpdated().toISOString()
     },
     metadata,
-    rowCountIncludingHeader: values.length,
-    dataRowCount: Math.max(0, values.length - 1),
-    columnCount: values[0].length,
+    rowCountIncludingHeader: getRowCountIncludingHeader(metadata, csv),
+    dataRowCount: getDataRowCount(metadata, csv),
+    columnCount: VIDEO_COLUMNS.length,
     csvBytes,
     csv,
     serverTimingsMs: {
-      openSpreadsheet: openMs,
-      readValues: readMs,
-      serializeCsv: serializeMs,
+      readCsv: readMs,
       total: Date.now() - totalStart
     }
   };
 }
 
-function getOrCreateSpreadsheet() {
-  const existingFile = getOnlySpreadsheetFileByNameOrNull(SPREADSHEET_FOLDER_PATH, SPREADSHEET_NAME);
+function readMetadata() {
+  const file = getOnlyDriveFileByNameOrNull(DATA_FOLDER_PATH, METADATA_JSON_FILE_NAME);
 
-  if (existingFile) {
-    return SpreadsheetApp.openById(existingFile.getId());
+  if (!file) {
+    return createDefaultMetadata();
   }
 
-  const folder = getOrCreateFolderByPath(DRIVE_ROOT_FOLDER_ID, SPREADSHEET_FOLDER_PATH);
-  const spreadsheet = SpreadsheetApp.create(SPREADSHEET_NAME);
-  DriveApp.getFileById(spreadsheet.getId()).moveTo(folder);
+  const content = file.getBlob().getDataAsString();
 
-  ensureSpreadsheetSheets(spreadsheet);
+  if (!content.trim()) {
+    return createDefaultMetadata();
+  }
 
-  return spreadsheet;
-}
+  try {
+    const metadata = JSON.parse(content);
 
-function ensureSpreadsheetSheets(spreadsheet) {
-  DATA_SHEET_NAMES.forEach((sheetName) => getOrCreateSheet(spreadsheet, sheetName));
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      throw new Error('metadata JSON must be an object');
+    }
 
-  const metadataSheet = getOrCreateSheet(spreadsheet, METADATA_SHEET_NAME);
-
-  if (metadataSheet.getLastRow() === 0) {
-    writeMetadata(metadataSheet, {
-      last_refresh_started_at: '',
-      last_refresh_finished_at: '',
-      last_refresh_status: '',
-      last_refresh_trigger_type: '',
-      last_refresh_error: '',
-      row_count: '0',
-      schema_version: '1'
+    return normalizeMetadata({
+      ...createDefaultMetadata(),
+      ...metadata
     });
+  } catch (error) {
+    throw new Error(`Invalid metadata JSON. file=${METADATA_JSON_FILE_NAME}, error=${error.message || error}`);
   }
 }
 
-function readMetadata(sheet) {
-  const values = sheet.getDataRange().getValues();
-  const metadata = {};
-
-  values.slice(1).forEach((row) => {
-    const key = String(row[0] || '').trim();
-
-    if (!key) return;
-
-    metadata[key] = formatMetadataValue(row[1]);
-  });
-
-  return metadata;
+function writeMetadata(metadata) {
+  writeDriveFile(METADATA_JSON_FILE_NAME, JSON.stringify(normalizeMetadata(metadata), null, 2), JSON_MIME_TYPE);
 }
 
-function writeMetadata(sheet, metadata) {
+function normalizeMetadata(metadata) {
   const keys = [
     'last_refresh_started_at',
     'last_refresh_finished_at',
@@ -119,11 +74,25 @@ function writeMetadata(sheet, metadata) {
     'channel_title',
     'uploads_playlist_id'
   ];
-  const values = [['key', 'value']].concat(keys.map((key) => [key, metadata[key] || '']));
+  const normalized = {};
 
-  sheet.clearContents();
-  sheet.getRange(1, 1, values.length, 2).setValues(values);
-  sheet.setFrozenRows(1);
+  keys.forEach((key) => {
+    normalized[key] = formatMetadataValue(metadata[key]);
+  });
+
+  return normalized;
+}
+
+function createDefaultMetadata() {
+  return normalizeMetadata({
+    last_refresh_started_at: '',
+    last_refresh_finished_at: '',
+    last_refresh_status: '',
+    last_refresh_trigger_type: '',
+    last_refresh_error: '',
+    row_count: '0',
+    schema_version: '1'
+  });
 }
 
 function formatMetadataValue(value) {
@@ -138,50 +107,66 @@ function formatMetadataValue(value) {
   return String(value);
 }
 
-function validateSheetValues(values, sheetName, requiredColumns) {
-  if (values.length === 0 || values[0].length === 0) {
-    throw new Error(`Sheet is empty. spreadsheet=${SPREADSHEET_NAME}, sheet=${sheetName}`);
+function objectsToCsv(columns, objects) {
+  if (objects.length > MAX_DATA_ROWS) {
+    throw new Error(`Too many rows. rows=${objects.length}, max=${MAX_DATA_ROWS}`);
   }
 
-  if (values.length > MAX_SHEET_ROWS) {
-    throw new Error(`Too many rows. rows=${values.length}, max=${MAX_SHEET_ROWS}`);
+  const csv = [columns].concat(objects.map((object) => columns.map((column) => object[column])))
+    .map((row) => row.map(formatCsvCell).join(','))
+    .join('\n');
+
+  validateCsv(csv, VIDEO_CSV_FILE_NAME);
+
+  return csv;
+}
+
+function writeCsvFile(fileName, csv) {
+  validateCsv(csv, fileName);
+  return writeDriveFile(fileName, csv, CSV_MIME_TYPE);
+}
+
+function validateCsv(csv, fileName) {
+  const csvBytes = getCsvBytes(csv);
+
+  if (csvBytes > MAX_CSV_BYTES) {
+    throw new Error(`CSV payload is too large. file=${fileName}, bytes=${csvBytes}, max=${MAX_CSV_BYTES}`);
   }
 
-  const columns = values[0].map((value) => String(value || '').trim());
-  const missingColumns = requiredColumns.filter((column) => !columns.includes(column));
+  const lines = csv ? csv.split(/\r\n|\n|\r/) : [];
+
+  if (lines.length === 0 || !lines[0]) {
+    throw new Error(`CSV is empty. file=${fileName}`);
+  }
+
+  if (lines.length - 1 > MAX_DATA_ROWS) {
+    throw new Error(`Too many rows. file=${fileName}, rows=${lines.length - 1}, max=${MAX_DATA_ROWS}`);
+  }
+
+  const columns = parseCsvLine(lines[0]).map((value) => String(value || '').trim());
+  const missingColumns = UI_REQUIRED_COLUMNS.filter((column) => !columns.includes(column));
 
   if (missingColumns.length > 0) {
-    throw new Error(`Required columns are missing. sheet=${sheetName}, columns=${missingColumns.join(', ')}`);
+    throw new Error(`Required columns are missing. file=${fileName}, columns=${missingColumns.join(', ')}`);
   }
 }
 
-function writeObjects(spreadsheet, sheetName, columns, objects) {
-  const sheet = getOrCreateSheet(spreadsheet, sheetName);
-  const values = [columns].concat(objects.map((object) => columns.map((column) => object[column])));
-
-  validateSheetValues(values, sheetName, UI_REQUIRED_COLUMNS);
-
-  sheet.clearContents();
-  sheet.getRange(1, 1, values.length, columns.length).setValues(values);
-  sheet.setFrozenRows(1);
+function getCsvBytes(csv) {
+  return Utilities.newBlob(csv, CSV_MIME_TYPE).getBytes().length;
 }
 
-function copySheetValues(spreadsheet, sourceSheetName, destinationSheetName) {
-  const sourceSheet = spreadsheet.getSheetByName(sourceSheetName);
+function getDataRowCount(metadata, csv) {
+  const metadataRowCount = Number(metadata.row_count);
 
-  if (!sourceSheet) {
-    throw new Error(`Source sheet not found. spreadsheet=${SPREADSHEET_NAME}, sheet=${sourceSheetName}`);
+  if (Number.isFinite(metadataRowCount) && metadataRowCount >= 0) {
+    return metadataRowCount;
   }
 
-  const values = sourceSheet.getDataRange().getValues();
-  validateSheetValues(values, sourceSheetName, UI_REQUIRED_COLUMNS);
+  return Math.max(0, csv.split(/\r\n|\n|\r/).length - 1);
+}
 
-  const destinationSheet = getOrCreateSheet(spreadsheet, destinationSheetName);
-  destinationSheet.clearContents();
-  destinationSheet.getRange(1, 1, values.length, values[0].length).setValues(values);
-  destinationSheet.setFrozenRows(1);
-
-  validateSheetValues(destinationSheet.getDataRange().getValues(), destinationSheetName, UI_REQUIRED_COLUMNS);
+function getRowCountIncludingHeader(metadata, csv) {
+  return getDataRowCount(metadata, csv) + 1;
 }
 
 function formatCsvCell(value) {
@@ -200,23 +185,58 @@ function formatCsvCell(value) {
   return text;
 }
 
-function getOrCreateSheet(spreadsheet, sheetName) {
-  return spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
+function parseCsvLine(line) {
+  const cells = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const nextChar = line[index + 1];
+
+    if (char === '"' && inQuotes && nextChar === '"') {
+      cell += '"';
+      index += 1;
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      cells.push(cell);
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+
+  cells.push(cell);
+
+  return cells;
 }
 
-function getOnlySpreadsheetFileByName(folderPath, spreadsheetName) {
-  const file = getOnlySpreadsheetFileByNameOrNull(folderPath, spreadsheetName);
+function writeDriveFile(fileName, content, mimeType) {
+  const folder = getOrCreateFolderByPath(DRIVE_ROOT_FOLDER_ID, DATA_FOLDER_PATH);
+  const file = getOnlyDriveFileByNameOrNull(DATA_FOLDER_PATH, fileName);
+
+  if (file) {
+    file.setContent(content);
+    return file;
+  }
+
+  return folder.createFile(fileName, content, mimeType);
+}
+
+function getOnlyDriveFileByName(folderPath, fileName) {
+  const file = getOnlyDriveFileByNameOrNull(folderPath, fileName);
 
   if (!file) {
-    throw new Error(`Spreadsheet not found. folderPath=${folderPath}, name=${spreadsheetName}`);
+    throw new Error(`Drive file not found. folderPath=${folderPath}, name=${fileName}`);
   }
 
   return file;
 }
 
-function getOnlySpreadsheetFileByNameOrNull(folderPath, spreadsheetName) {
+function getOnlyDriveFileByNameOrNull(folderPath, fileName) {
   const folder = getOrCreateFolderByPath(DRIVE_ROOT_FOLDER_ID, folderPath);
-  const files = folder.getFilesByName(spreadsheetName);
+  const files = folder.getFilesByName(fileName);
 
   if (!files.hasNext()) {
     return null;
@@ -225,11 +245,7 @@ function getOnlySpreadsheetFileByNameOrNull(folderPath, spreadsheetName) {
   const file = files.next();
 
   if (files.hasNext()) {
-    throw new Error(`Duplicate spreadsheet name. folderPath=${folderPath}, name=${spreadsheetName}`);
-  }
-
-  if (file.getMimeType() !== GOOGLE_SHEETS_MIME_TYPE) {
-    throw new Error(`File is not Google Sheets. name=${spreadsheetName}, mimeType=${file.getMimeType()}`);
+    throw new Error(`Duplicate Drive file name. folderPath=${folderPath}, name=${fileName}`);
   }
 
   return file;

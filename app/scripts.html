@@ -1077,8 +1077,8 @@
           state.conn = null;
         }
 
-        setStatus('SpreadsheetをCSV化中...');
-        const dataset = await gasRun('getSpreadsheetCsv');
+        setStatus('CSVを読み込み中...');
+        const dataset = await gasRun('getDatasetCsv');
 
         if (!state.db) {
           setStatus('DuckDB-Wasmを初期化中...');

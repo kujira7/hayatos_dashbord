@@ -15,18 +15,13 @@ function refreshDataset(options) {
   }
 
   const startedAt = new Date();
-  let metadataSheet = null;
   let metadata = {};
   let channel = null;
 
   try {
-    const spreadsheet = getOrCreateSpreadsheet();
-    ensureSpreadsheetSheets(spreadsheet);
+    metadata = readMetadata();
 
-    metadataSheet = getOrCreateSheet(spreadsheet, METADATA_SHEET_NAME);
-    metadata = readMetadata(metadataSheet);
-
-    writeMetadata(metadataSheet, {
+    writeMetadata({
       ...metadata,
       last_refresh_started_at: startedAt.toISOString(),
       last_refresh_finished_at: '',
@@ -38,8 +33,9 @@ function refreshDataset(options) {
     const dataset = fetchYouTubeDataset();
     channel = dataset.channel;
 
-    writeObjects(spreadsheet, STAGING_SHEET_NAME, VIDEO_COLUMNS, dataset.rows);
-    copySheetValues(spreadsheet, STAGING_SHEET_NAME, ACTIVE_SHEET_NAME);
+    const csv = objectsToCsv(VIDEO_COLUMNS, dataset.rows);
+    writeCsvFile(STAGING_VIDEO_CSV_FILE_NAME, csv);
+    writeCsvFile(VIDEO_CSV_FILE_NAME, csv);
 
     const finishedAt = new Date();
     const nextMetadata = {
@@ -56,20 +52,20 @@ function refreshDataset(options) {
       uploads_playlist_id: channel.uploadsPlaylistId
     };
 
-    writeMetadata(metadataSheet, nextMetadata);
+    writeMetadata(nextMetadata);
 
     return {
       status: 'success',
       triggerType,
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),
-      activeSheetName: ACTIVE_SHEET_NAME,
+      csvFileName: VIDEO_CSV_FILE_NAME,
       rowCount: dataset.rows.length,
       channel
     };
   } catch (error) {
-    if (metadataSheet) {
-      writeMetadata(metadataSheet, {
+    try {
+      writeMetadata({
         ...metadata,
         last_refresh_started_at: startedAt.toISOString(),
         last_refresh_finished_at: new Date().toISOString(),
@@ -80,6 +76,8 @@ function refreshDataset(options) {
         channel_title: channel ? channel.title : metadata.channel_title,
         uploads_playlist_id: channel ? channel.uploadsPlaylistId : metadata.uploads_playlist_id
       });
+    } catch (metadataError) {
+      console.error(`Failed to write refresh failure metadata. error=${metadataError.message || metadataError}`);
     }
 
     throw error;
