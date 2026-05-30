@@ -91,13 +91,29 @@
       activeCorrelationTemplate: CORRELATION_TEMPLATES[0].id,
       publishedDateValues: [],
       durationRange: null,
+      statusTimerId: null,
       correlationPoints: []
     };
 
-    function setStatus(message, isError = false) {
+    function setStatus(message, options = {}) {
+      const { type = 'loading', autoHideMs = type === 'success' ? 2000 : 0 } = options;
       const status = $('#status');
+
+      if (state.statusTimerId) {
+        clearTimeout(state.statusTimerId);
+        state.statusTimerId = null;
+      }
+
       status.textContent = message;
-      status.classList.toggle('error', isError);
+      status.hidden = false;
+      status.classList.toggle('error', type === 'error');
+
+      if (autoHideMs > 0) {
+        state.statusTimerId = setTimeout(() => {
+          status.hidden = true;
+          state.statusTimerId = null;
+        }, autoHideMs);
+      }
     }
 
     function escapeHtml(value) {
@@ -613,8 +629,6 @@
       state.currentPage = Math.max(1, Math.min(page, state.totalPages));
       const offset = (state.currentPage - 1) * state.pageSize;
 
-      setStatus(`ページ ${state.currentPage.toLocaleString('ja-JP')} を取得中...`);
-
       const rows = arrowRows(await state.conn.query(`
         SELECT
           thumbnail_url,
@@ -637,7 +651,6 @@
 
       renderRows(rows);
       renderPager();
-      setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件中 ${rows.length} 件を表示しています。`);
     }
 
     async function createBiView() {
@@ -1430,7 +1443,7 @@
         const cachedRecord = await measureTiming(timings, 'readCache', () => readCachedDataset());
 
         if (cachedRecord) {
-          setStatus('キャッシュから表示中。最新確認中...');
+          setStatus('キャッシュから表示中。最新確認中...', { type: 'loading' });
           const cachedDataset = cachedRecordToDataset(cachedRecord);
           const db = state.db || await measureTiming(timings, 'createDuckDB', () => createDuckDB());
 
@@ -1439,21 +1452,22 @@
           timings.total = performance.now() - totalStart;
           renderedFromCache = true;
           logLoadTimings(timings, cachedDataset);
-          setStatus(`キャッシュから表示中。${formatLoadTimingStatus(timings, cachedDataset)}`);
+          setStatus(`キャッシュから表示中。最新確認中。${formatLoadTimingStatus(timings, cachedDataset)}`, { type: 'loading' });
         }
 
-        setStatus(renderedFromCache ? '最新確認中...' : 'CSV読み込みとDuckDB-Wasm初期化中...');
-        const manifest = await measureTiming(timings, 'getDatasetManifest', () => gasRun('getDatasetManifest'));
+        const manifest = renderedFromCache
+          ? await measureTiming(timings, 'getDatasetManifest', () => gasRun('getDatasetManifest'))
+          : null;
 
         if (renderedFromCache && isCachedDatasetFresh(cachedRecord, manifest)) {
           timings.total = performance.now() - totalStart;
           state.dataset.serverTimingsMs = manifest.serverTimingsMs;
           logLoadTimings(timings, state.dataset);
-          setStatus(`最新確認済み。${formatLoadTimingStatus(timings, state.dataset)}`);
+          setStatus(`最新確認済み。${formatLoadTimingStatus(timings, state.dataset)}`, { type: 'success' });
           return;
         }
 
-        setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...');
+        setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...', { type: 'loading' });
         const datasetPromise = measureTiming(timings, 'getDatasetCsv', () => gasRun('getDatasetCsv'));
         const dbPromise = state.db
           ? Promise.resolve(state.db)
@@ -1468,7 +1482,7 @@
 
         timings.total = performance.now() - totalStart;
         logLoadTimings(timings, dataset);
-        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。${formatLoadTimingStatus(timings, dataset)}`);
+        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。${formatLoadTimingStatus(timings, dataset)}`, { type: 'success' });
       } finally {
         if (state.conn) {
           renderPager();
@@ -1487,13 +1501,13 @@
         state.conn = null;
       }
 
-      setStatus('CSVをDuckDB-Wasmに登録中...');
+      setStatus('CSVをDuckDB-Wasmに登録中...', { type: 'loading' });
       await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
 
-      setStatus('DuckDB connectionを作成中...');
+      setStatus('DuckDB connectionを作成中...', { type: 'loading' });
       state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
 
-      setStatus('read_csv_autoでviewを作成中...');
+      setStatus('read_csv_autoでviewを作成中...', { type: 'loading' });
       await measureTiming(timings, 'createVideosView', () => state.conn.query(`
         CREATE OR REPLACE VIEW videos AS
         SELECT *
@@ -1520,7 +1534,7 @@
       $('#page-size-select').disabled = true;
 
       try {
-        setStatus('YouTubeから全データ再取得中...');
+        setStatus('YouTubeから全データ再取得中...', { type: 'loading' });
         await gasRun('manualRefresh');
         await loadSpreadsheet();
       } finally {
@@ -1537,7 +1551,7 @@
 
     function handleError(error, clearRows = true) {
       console.error(error);
-      setStatus(`ERROR: ${error.message || error}`, true);
+      setStatus(`ERROR: ${error.message || error}`, { type: 'error' });
 
       if (clearRows) {
         $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込みに失敗しました。</td></tr>';
