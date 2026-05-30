@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "scripts": {
+    "gas:status": "mise exec npm:@google/clasp -- clasp status",
+    "gas:push": "mise exec npm:@google/clasp -- clasp push",
+    "gas:deploy": "mise exec npm:@google/clasp -- clasp deploy --deploymentId AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc --description \"main\"",
+    "gas:url": "node -e \"console.log('Web App URL: https://script.google.com/macros/s/AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc/exec')\"",
+    "gas:release": "npm run gas:push && npm run gas:deploy && npm run gas:url"
+  }
+}

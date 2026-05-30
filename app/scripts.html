@@ -1,0 +1,1013 @@
+  <script type="module">
+    import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
+
+    const CSV_PATH = 'videos.csv';
+    const PAGE_SIZE = 200;
+    const $ = (selector) => document.querySelector(selector);
+    const BI_METRICS = {
+      duration_sec_num: { label: '動画の長さ', format: formatDuration },
+      view_count_num: { label: '閲覧数', format: formatNumber },
+      views_per_day: { label: '再生/日', format: formatDecimal },
+      like_rate: { label: 'Like率', format: formatPercent },
+      comment_rate: { label: 'コメント率', format: formatPercent },
+      engagement_rate: { label: '反応率', format: formatPercent },
+      days_since_published: { label: '公開からの日数', format: formatNumber },
+      published_hour_num: { label: '公開時刻', format: formatHour },
+      peak_concurrent_viewers_num: { label: '最大同接(API)', format: formatNumber }
+    };
+    const CORRELATION_TEMPLATES = [
+      {
+        id: 'duration_views_per_day',
+        title: '長い動画は伸びる？',
+        meta: 'X: 動画の長さ / Y: 再生/日',
+        x: 'duration_sec_num',
+        y: 'views_per_day',
+        color: 'video_type',
+        filter: 'category:all',
+        xLog: false,
+        yLog: true,
+        trim: true
+      },
+      {
+        id: 'engagement_views_per_day',
+        title: '反応率が高い動画は伸びる？',
+        meta: 'X: 反応率 / Y: 再生/日',
+        x: 'engagement_rate',
+        y: 'views_per_day',
+        color: 'video_type',
+        filter: 'category:all',
+        xLog: false,
+        yLog: true,
+        trim: true
+      },
+      {
+        id: 'like_views_per_day',
+        title: 'Like率と伸びの関係',
+        meta: 'X: Like率 / Y: 再生/日',
+        x: 'like_rate',
+        y: 'views_per_day',
+        color: 'video_type',
+        filter: 'category:all',
+        xLog: false,
+        yLog: true,
+        trim: true
+      },
+      {
+        id: 'comment_views_per_day',
+        title: 'コメントが多い動画は伸びる？',
+        meta: 'X: コメント率 / Y: 再生/日',
+        x: 'comment_rate',
+        y: 'views_per_day',
+        color: 'video_type',
+        filter: 'category:all',
+        xLog: false,
+        yLog: true,
+        trim: true
+      },
+      {
+        id: 'hour_views_per_day',
+        title: '公開時間で差が出る？',
+        meta: 'X: 公開時刻 / Y: 再生/日',
+        x: 'published_hour_num',
+        y: 'views_per_day',
+        color: 'video_type',
+        filter: 'category:all',
+        xLog: false,
+        yLog: true,
+        trim: true
+      },
+      {
+        id: 'live_peak_views',
+        title: 'LIVEはアーカイブでも強い？',
+        meta: 'X: 最大同接 / Y: 閲覧数',
+        x: 'peak_concurrent_viewers_num',
+        y: 'view_count_num',
+        color: 'published_month',
+        filter: 'category:live',
+        xLog: true,
+        yLog: true,
+        trim: true
+      }
+    ];
+    const state = {
+      db: null,
+      conn: null,
+      dataset: null,
+      currentView: 'list',
+      rowCount: 0,
+      filteredCount: 0,
+      categoryCounts: {
+        normal: 0,
+        shorts: 0,
+        live: 0
+      },
+      currentPage: 1,
+      totalPages: 1,
+      filterValue: 'category:all',
+      activeCorrelationTemplate: CORRELATION_TEMPLATES[0].id,
+      correlationPoints: []
+    };
+
+    function setStatus(message, isError = false) {
+      const status = $('#status');
+      status.textContent = message;
+      status.classList.toggle('error', isError);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      }[ch]));
+    }
+
+    function gasRun(functionName, ...args) {
+      return new Promise((resolve, reject) => {
+        window.google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)[functionName](...args);
+      });
+    }
+
+    async function createDuckDB() {
+      const bundles = duckdb.getJsDelivrBundles();
+      const bundle = await duckdb.selectBundle(bundles);
+      const workerUrl = URL.createObjectURL(
+        new Blob(
+          [`importScripts("${bundle.mainWorker}");`],
+          { type: 'text/javascript' }
+        )
+      );
+      const worker = new Worker(workerUrl);
+      const logger = new duckdb.ConsoleLogger();
+      const db = new duckdb.AsyncDuckDB(logger, worker);
+
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      URL.revokeObjectURL(workerUrl);
+
+      return db;
+    }
+
+    function arrowRows(result) {
+      return result.toArray().map((row) => row.toJSON());
+    }
+
+    function sqlString(value) {
+      return String(value).replace(/'/g, "''");
+    }
+
+    function getWhereSql() {
+      if (state.filterValue === 'category:all') {
+        return '';
+      }
+
+      if (state.filterValue === 'category:normal') {
+        return `
+          WHERE COALESCE(live_type, '') NOT LIKE '%LIVE%'
+            AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) > 60
+        `;
+      }
+
+      if (state.filterValue === 'category:shorts') {
+        return `
+          WHERE COALESCE(live_type, '') NOT LIKE '%LIVE%'
+            AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60
+        `;
+      }
+
+      return "WHERE COALESCE(live_type, '') LIKE '%LIVE%'";
+    }
+
+    function getFilterLabel() {
+      if (state.filterValue === 'category:all') return 'ALL';
+      if (state.filterValue === 'category:normal') return '通常動画';
+      if (state.filterValue === 'category:shorts') return 'Shorts';
+      return 'LIVE';
+    }
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      return Number(value).toLocaleString('ja-JP');
+    }
+
+    function formatDecimal(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '-';
+      return number.toLocaleString('ja-JP', { maximumFractionDigits: 1 });
+    }
+
+    function formatPercent(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '-';
+      return `${(number * 100).toLocaleString('ja-JP', { maximumFractionDigits: 2 })}%`;
+    }
+
+    function formatHour(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      const hour = Number(value);
+      if (!Number.isFinite(hour)) return '-';
+      return `${String(hour).padStart(2, '0')}:00`;
+    }
+
+    function formatDate(value) {
+      if (!value) return '-';
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+
+    function formatDuration(value) {
+      const total = Number(value);
+      if (!Number.isFinite(total) || total <= 0) return '-';
+
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = Math.floor(total % 60);
+
+      if (hours > 0) {
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      }
+
+      return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function normalizeVisibility(value) {
+      if (value === 'public') return '公開';
+      if (value === 'unlisted') return '限定公開';
+      if (value === 'private') return '非公開';
+      return value || '-';
+    }
+
+    function normalizeVideoType(value, durationSec) {
+      if (String(value || '').includes('LIVE')) return 'LIVE';
+
+      const duration = Number(durationSec);
+      if (Number.isFinite(duration) && duration <= 60) return 'Shorts';
+
+      return value || '通常動画';
+    }
+
+    function renderRows(rows) {
+      if (rows.length === 0) {
+        $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">表示できる動画がありません。</td></tr>';
+        return;
+      }
+
+      $('#tbody').innerHTML = rows.map((row) => {
+        const videoUrl = escapeHtml(row.video_id ? `https://www.youtube.com/watch?v=${row.video_id}` : '');
+        const thumb = escapeHtml(row.thumbnail_url);
+        const title = escapeHtml(row.title);
+        const published = escapeHtml(formatDate(row.published_at));
+        const duration = escapeHtml(formatDuration(row.duration_sec));
+        const liveType = escapeHtml(normalizeVideoType(row.live_type, row.duration_sec));
+        const visibility = escapeHtml(normalizeVisibility(row.visibility));
+        const views = escapeHtml(formatNumber(row.view_count));
+        const likes = escapeHtml(formatNumber(row.like_count));
+        const comments = escapeHtml(formatNumber(row.comment_count));
+        const peak = escapeHtml(formatNumber(row.peak_concurrent_viewers));
+
+        return `
+          <tr class="clickable-row" data-video-url="${videoUrl}" tabindex="0">
+            <td>
+              <div class="video-cell">
+                <img
+                  class="thumb"
+                  src="${thumb}"
+                  loading="lazy"
+                  decoding="async"
+                  width="76"
+                  height="43"
+                  onerror="this.style.display='none'"
+                >
+                <div>
+                  <div class="title" title="${title}">${title}</div>
+                  <div class="video-meta">- ${duration} ・ ${liveType}</div>
+                </div>
+              </div>
+            </td>
+            <td class="date-cell">${published}</td>
+            <td><span class="badge badge-live">${liveType}</span></td>
+            <td><span class="badge badge-public">${visibility}</span></td>
+            <td class="number-cell right">${views}</td>
+            <td class="number-cell right">${likes}</td>
+            <td class="number-cell right">${comments}</td>
+            <td class="number-cell right">${peak}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderCounts() {
+      const filtered = state.filteredCount.toLocaleString('ja-JP');
+      const filterLabel = getFilterLabel();
+
+      $('#side-normal-count').textContent = state.categoryCounts.normal.toLocaleString('ja-JP');
+      $('#side-shorts-count').textContent = state.categoryCounts.shorts.toLocaleString('ja-JP');
+      $('#side-live-count').textContent = state.categoryCounts.live.toLocaleString('ja-JP');
+      document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.filter === state.filterValue);
+      });
+      $('#page-title').textContent = filterLabel;
+      $('#summary').textContent = `全期間 | ${filterLabel} | 全 ${filtered} 本`;
+    }
+
+    function renderPager() {
+      const start = state.filteredCount === 0
+        ? 0
+        : ((state.currentPage - 1) * PAGE_SIZE) + 1;
+      const end = Math.min(state.currentPage * PAGE_SIZE, state.filteredCount);
+
+      $('#page-info').textContent = state.filteredCount === 0
+        ? '0件'
+        : `${start.toLocaleString('ja-JP')}-${end.toLocaleString('ja-JP')} / ${state.filteredCount.toLocaleString('ja-JP')}件`;
+
+      $('#prev-button').disabled = state.currentPage <= 1;
+      $('#next-button').disabled = state.currentPage >= state.totalPages;
+    }
+
+    async function refreshFilterOptions() {
+      $('#live-filter').innerHTML = [
+        `<option value="category:all">ALL (${state.rowCount.toLocaleString('ja-JP')})</option>`,
+        `<option value="category:live">LIVE (${state.categoryCounts.live.toLocaleString('ja-JP')})</option>`,
+        `<option value="category:normal">通常動画 (${state.categoryCounts.normal.toLocaleString('ja-JP')})</option>`,
+        `<option value="category:shorts">Shorts (${state.categoryCounts.shorts.toLocaleString('ja-JP')})</option>`
+      ].join('');
+    }
+
+    async function refreshCategoryCounts() {
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          count(*)::VARCHAR AS total_count,
+          sum(CASE
+            WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 1
+            ELSE 0
+          END)::VARCHAR AS live_count,
+          sum(CASE
+            WHEN COALESCE(live_type, '') NOT LIKE '%LIVE%'
+              AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60 THEN 1
+            ELSE 0
+          END)::VARCHAR AS shorts_count,
+          sum(CASE
+            WHEN COALESCE(live_type, '') NOT LIKE '%LIVE%'
+              AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) > 60 THEN 1
+            ELSE 0
+          END)::VARCHAR AS normal_count
+        FROM videos
+      `));
+      const row = rows[0] || {};
+
+      state.rowCount = Number(row.total_count || 0);
+      state.categoryCounts = {
+        normal: Number(row.normal_count || 0),
+        shorts: Number(row.shorts_count || 0),
+        live: Number(row.live_count || 0)
+      };
+    }
+
+    async function refreshCounts() {
+      await refreshCategoryCounts();
+      const filteredRows = arrowRows(await state.conn.query(`
+        SELECT count(*)::VARCHAR AS row_count
+        FROM videos
+        ${getWhereSql()}
+      `));
+
+      state.filteredCount = Number(filteredRows[0].row_count);
+      state.totalPages = Math.max(1, Math.ceil(state.filteredCount / PAGE_SIZE));
+      state.currentPage = Math.min(state.currentPage, state.totalPages);
+      renderCounts();
+      renderPager();
+    }
+
+    async function renderPage(page) {
+      state.currentPage = Math.max(1, Math.min(page, state.totalPages));
+      const offset = (state.currentPage - 1) * PAGE_SIZE;
+
+      setStatus(`ページ ${state.currentPage.toLocaleString('ja-JP')} を取得中...`);
+
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          thumbnail_url,
+          video_id,
+          title,
+          published_at,
+          duration_sec,
+          live_type,
+          visibility,
+          view_count,
+          like_count,
+          comment_count,
+          peak_concurrent_viewers
+        FROM videos
+        ${getWhereSql()}
+        ORDER BY peak_concurrent_viewers DESC NULLS LAST, published_at DESC NULLS LAST
+        LIMIT ${PAGE_SIZE}
+        OFFSET ${offset}
+      `));
+
+      renderRows(rows);
+      renderPager();
+      setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件中 ${rows.length} 件を表示しています。`);
+    }
+
+    async function createBiView() {
+      await state.conn.query(`
+        CREATE OR REPLACE VIEW videos_bi AS
+        WITH base AS (
+          SELECT
+            *,
+            try_cast(view_count AS DOUBLE) AS view_count_num,
+            try_cast(like_count AS DOUBLE) AS like_count_num,
+            try_cast(comment_count AS DOUBLE) AS comment_count_num,
+            try_cast(duration_sec AS DOUBLE) AS duration_sec_num,
+            try_cast(peak_concurrent_viewers AS DOUBLE) AS peak_concurrent_viewers_num,
+            try_cast(substr(published_at, 1, 10) AS DATE) AS published_date,
+            try_cast(substr(published_at, 12, 2) AS INTEGER) AS published_hour_num
+          FROM videos
+        ),
+        enriched AS (
+          SELECT
+            *,
+            CASE
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
+              WHEN COALESCE(duration_sec_num, 999999) <= 60 THEN 'Shorts'
+              ELSE '通常動画'
+            END AS video_type,
+            CASE
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 3600 THEN 'LIVE 1h未満'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 7200 THEN 'LIVE 1-2h'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 14400 THEN 'LIVE 2-4h'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE 4h+'
+              WHEN COALESCE(duration_sec_num, 999999) <= 60 THEN 'Shorts'
+              WHEN COALESCE(duration_sec_num, 0) < 600 THEN '通常 0-10m'
+              WHEN COALESCE(duration_sec_num, 0) < 1200 THEN '通常 10-20m'
+              WHEN COALESCE(duration_sec_num, 0) < 2400 THEN '通常 20-40m'
+              ELSE '通常 40m+'
+            END AS duration_bucket,
+            substr(published_at, 1, 7) AS published_month,
+            greatest(1, COALESCE(date_diff('day', published_date, current_date), 1)) AS days_since_published
+          FROM base
+        )
+        SELECT
+          *,
+          view_count_num / days_since_published AS views_per_day,
+          like_count_num / NULLIF(view_count_num, 0) AS like_rate,
+          comment_count_num / NULLIF(view_count_num, 0) AS comment_rate,
+          (like_count_num + comment_count_num) / NULLIF(view_count_num, 0) AS engagement_rate
+        FROM enriched
+      `);
+    }
+
+    function initializeBiControls() {
+      const metricOptions = Object.entries(BI_METRICS)
+        .map(([value, metric]) => `<option value="${value}">${escapeHtml(metric.label)}</option>`)
+        .join('');
+
+      $('#x-metric').innerHTML = metricOptions;
+      $('#y-metric').innerHTML = metricOptions;
+      applyCorrelationTemplate(CORRELATION_TEMPLATES[0], false);
+      renderCorrelationTemplates();
+    }
+
+    function renderCorrelationTemplates() {
+      $('#correlation-templates').innerHTML = CORRELATION_TEMPLATES.map((template) => `
+        <button
+          class="template-card ${template.id === state.activeCorrelationTemplate ? 'active' : ''}"
+          type="button"
+          data-template-id="${escapeHtml(template.id)}"
+        >
+          <span class="template-title">${escapeHtml(template.title)}</span>
+          <span class="template-meta">${escapeHtml(template.meta)}</span>
+        </button>
+      `).join('');
+    }
+
+    function applyCorrelationTemplate(template, shouldRender = true) {
+      state.activeCorrelationTemplate = template.id;
+      $('#x-metric').value = template.x;
+      $('#y-metric').value = template.y;
+      $('#color-metric').value = template.color;
+      $('#bi-filter').value = template.filter;
+      $('#x-log').checked = template.xLog;
+      $('#y-log').checked = template.yLog;
+      $('#trim-outliers').checked = template.trim;
+      renderCorrelationTemplates();
+
+      if (shouldRender && state.conn) {
+        renderCorrelation().catch(handleError);
+      }
+    }
+
+    function getBiWhereSql(xMetric, yMetric) {
+      const conditions = [
+        `${xMetric} IS NOT NULL`,
+        `${yMetric} IS NOT NULL`
+      ];
+      const filterValue = $('#bi-filter').value;
+      const keyword = $('#bi-keyword').value.trim();
+
+      if (filterValue === 'category:live') {
+        conditions.push("video_type = 'LIVE'");
+      } else if (filterValue === 'category:normal') {
+        conditions.push("video_type = '通常動画'");
+      } else if (filterValue === 'category:shorts') {
+        conditions.push("video_type = 'Shorts'");
+      }
+
+      if ($('#x-log').checked) {
+        conditions.push(`${xMetric} > 0`);
+      }
+
+      if ($('#y-log').checked) {
+        conditions.push(`${yMetric} > 0`);
+      }
+
+      if (keyword) {
+        conditions.push(`title ILIKE '%${sqlString(keyword)}%'`);
+      }
+
+      return `WHERE ${conditions.join(' AND ')}`;
+    }
+
+    function getMetricValue(value, useLog) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) return null;
+      if (useLog && number <= 0) return null;
+
+      return useLog ? Math.log10(number) : number;
+    }
+
+    function trimPointOutliers(points) {
+      if (points.length < 40 || !$('#trim-outliers').checked) {
+        return points;
+      }
+
+      const xs = points.map((point) => point.xPlot).sort((a, b) => a - b);
+      const ys = points.map((point) => point.yPlot).sort((a, b) => a - b);
+      const lowIndex = Math.floor(points.length * 0.01);
+      const highIndex = Math.ceil(points.length * 0.99) - 1;
+      const minX = xs[lowIndex];
+      const maxX = xs[highIndex];
+      const minY = ys[lowIndex];
+      const maxY = ys[highIndex];
+
+      return points.filter((point) => (
+        point.xPlot >= minX &&
+        point.xPlot <= maxX &&
+        point.yPlot >= minY &&
+        point.yPlot <= maxY
+      ));
+    }
+
+    function calculatePearson(points) {
+      if (points.length < 2) return null;
+
+      const meanX = points.reduce((sum, point) => sum + point.xPlot, 0) / points.length;
+      const meanY = points.reduce((sum, point) => sum + point.yPlot, 0) / points.length;
+      let numerator = 0;
+      let sumX = 0;
+      let sumY = 0;
+
+      points.forEach((point) => {
+        const dx = point.xPlot - meanX;
+        const dy = point.yPlot - meanY;
+        numerator += dx * dy;
+        sumX += dx * dx;
+        sumY += dy * dy;
+      });
+
+      const denominator = Math.sqrt(sumX * sumY);
+      return denominator === 0 ? null : numerator / denominator;
+    }
+
+    function drawScatter(points, xMetric, yMetric) {
+      const canvas = $('#correlation-canvas');
+      const ctx = canvas.getContext('2d');
+      const width = canvas.width;
+      const height = canvas.height;
+      const padding = { top: 24, right: 28, bottom: 52, left: 72 };
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+      const palette = ['#4aa3ff', '#f7b84b', '#7bd88f', '#e078d8', '#ff7a7a', '#9d8cff'];
+      const colorMap = {};
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#0d1116';
+      ctx.fillRect(0, 0, width, height);
+
+      if (points.length === 0) {
+        ctx.fillStyle = '#8f98a6';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('表示できる点がありません。', width / 2, height / 2);
+        state.correlationPoints = [];
+        return;
+      }
+
+      const xs = points.map((point) => point.xPlot);
+      const ys = points.map((point) => point.yPlot);
+      let minX = Math.min(...xs);
+      let maxX = Math.max(...xs);
+      let minY = Math.min(...ys);
+      let maxY = Math.max(...ys);
+
+      if (minX === maxX) {
+        minX -= 1;
+        maxX += 1;
+      }
+
+      if (minY === maxY) {
+        minY -= 1;
+        maxY += 1;
+      }
+
+      const xToCanvas = (value) => padding.left + ((value - minX) / (maxX - minX)) * plotWidth;
+      const yToCanvas = (value) => padding.top + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+
+      ctx.strokeStyle = '#2b3038';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, padding.top + plotHeight);
+      ctx.lineTo(padding.left + plotWidth, padding.top + plotHeight);
+      ctx.stroke();
+
+      ctx.fillStyle = '#9aa3af';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(BI_METRICS[xMetric].label, padding.left + plotWidth / 2, height - 14);
+      ctx.save();
+      ctx.translate(16, padding.top + plotHeight / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(BI_METRICS[yMetric].label, 0, 0);
+      ctx.restore();
+
+      state.correlationPoints = points.map((point) => {
+        const key = String(point.colorValue || '-');
+
+        if (!(key in colorMap)) {
+          colorMap[key] = palette[Object.keys(colorMap).length % palette.length];
+        }
+
+        const cx = xToCanvas(point.xPlot);
+        const cy = yToCanvas(point.yPlot);
+
+        ctx.beginPath();
+        ctx.fillStyle = colorMap[key];
+        ctx.globalAlpha = 0.72;
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        return { ...point, cx, cy };
+      });
+
+      const legendEntries = Object.entries(colorMap).slice(0, 6);
+      legendEntries.forEach(([label, color], index) => {
+        const x = padding.left + 8;
+        const y = padding.top + 16 + (index * 18);
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y - 8, 10, 10);
+        ctx.fillStyle = '#c7d0db';
+        ctx.textAlign = 'left';
+        ctx.fillText(label, x + 16, y);
+      });
+    }
+
+    function renderOutliers(points, xMetric, yMetric) {
+      const formatterX = BI_METRICS[xMetric].format;
+      const formatterY = BI_METRICS[yMetric].format;
+      const rows = [...points]
+        .sort((a, b) => Number(b.yRaw || 0) - Number(a.yRaw || 0))
+        .slice(0, 8);
+
+      if (rows.length === 0) {
+        $('#correlation-outliers').innerHTML = '<tr><td class="empty" colspan="5">表示できる動画がありません。</td></tr>';
+        return;
+      }
+
+      $('#correlation-outliers').innerHTML = rows.map((row) => `
+        <tr class="clickable-row" data-video-url="${escapeHtml(row.videoUrl)}" tabindex="0">
+          <td>${escapeHtml(row.title || '-')}</td>
+          <td class="right">${escapeHtml(formatterX(row.xRaw))}</td>
+          <td class="right">${escapeHtml(formatterY(row.yRaw))}</td>
+          <td>${escapeHtml(row.videoType || '-')}</td>
+          <td>${escapeHtml(formatDate(row.publishedAt))}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function renderCorrelation() {
+      if (!state.conn) return;
+
+      const xMetric = $('#x-metric').value;
+      const yMetric = $('#y-metric').value;
+      const colorMetric = $('#color-metric').value;
+      const limit = Number($('#point-limit').value || 600);
+
+      if (!BI_METRICS[xMetric] || !BI_METRICS[yMetric]) {
+        throw new Error('Invalid metric selection.');
+      }
+
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          video_id,
+          title,
+          published_at,
+          video_type,
+          ${colorMetric} AS color_value,
+          ${xMetric} AS x_value,
+          ${yMetric} AS y_value
+        FROM videos_bi
+        ${getBiWhereSql(xMetric, yMetric)}
+        ORDER BY view_count_num DESC NULLS LAST
+        LIMIT 3000
+      `));
+      const useXLog = $('#x-log').checked;
+      const useYLog = $('#y-log').checked;
+      const points = rows
+        .map((row) => ({
+          videoId: row.video_id,
+          videoUrl: row.video_id ? `https://www.youtube.com/watch?v=${row.video_id}` : '',
+          title: row.title,
+          publishedAt: row.published_at,
+          videoType: row.video_type,
+          colorValue: row.color_value,
+          xRaw: row.x_value,
+          yRaw: row.y_value,
+          xPlot: getMetricValue(row.x_value, useXLog),
+          yPlot: getMetricValue(row.y_value, useYLog)
+        }))
+        .filter((point) => point.xPlot !== null && point.yPlot !== null);
+      const trimmedPoints = trimPointOutliers(points).slice(0, limit);
+      const correlation = calculatePearson(trimmedPoints);
+
+      $('#corr-n').textContent = trimmedPoints.length.toLocaleString('ja-JP');
+      $('#corr-r').textContent = correlation === null
+        ? '-'
+        : correlation.toLocaleString('ja-JP', { maximumFractionDigits: 3 });
+      $('#bi-summary').textContent = `${BI_METRICS[xMetric].label} x ${BI_METRICS[yMetric].label} | n=${trimmedPoints.length.toLocaleString('ja-JP')}`;
+
+      drawScatter(trimmedPoints, xMetric, yMetric);
+      renderOutliers(trimmedPoints, xMetric, yMetric);
+    }
+
+    async function loadSpreadsheet() {
+      $('#load-button').disabled = true;
+      $('#refresh-button').disabled = true;
+      $('#prev-button').disabled = true;
+      $('#next-button').disabled = true;
+      $('#live-filter').disabled = true;
+      $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込み中...</td></tr>';
+
+      try {
+        if (state.conn) {
+          await state.conn.close();
+          state.conn = null;
+        }
+
+        setStatus('SpreadsheetをCSV化中...');
+        const dataset = await gasRun('getSpreadsheetCsv');
+
+        if (!state.db) {
+          setStatus('DuckDB-Wasmを初期化中...');
+          state.db = await createDuckDB();
+        }
+
+        setStatus('CSVをDuckDB-Wasmに登録中...');
+        await state.db.registerFileText(CSV_PATH, dataset.csv);
+
+        setStatus('DuckDB connectionを作成中...');
+        state.conn = await state.db.connect();
+
+        setStatus('read_csv_autoでviewを作成中...');
+        await state.conn.query(`
+          CREATE OR REPLACE VIEW videos AS
+          SELECT *
+          FROM read_csv_auto('${CSV_PATH}', header = true)
+        `);
+        await createBiView();
+
+        state.dataset = dataset;
+
+        await refreshCounts();
+        await refreshFilterOptions();
+        $('#live-filter').value = state.filterValue;
+        renderCorrelationTemplates();
+        await renderPage(1);
+        await renderCorrelation();
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        $('#load-button').disabled = false;
+        $('#refresh-button').disabled = false;
+        $('#live-filter').disabled = false;
+      }
+    }
+
+    async function refreshFromYouTube() {
+      $('#load-button').disabled = true;
+      $('#refresh-button').disabled = true;
+      $('#prev-button').disabled = true;
+      $('#next-button').disabled = true;
+      $('#live-filter').disabled = true;
+
+      try {
+        setStatus('YouTubeから全データ再取得中...');
+        await gasRun('manualRefresh');
+        await loadSpreadsheet();
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        $('#load-button').disabled = false;
+        $('#refresh-button').disabled = false;
+        $('#live-filter').disabled = false;
+      }
+    }
+
+    function handleError(error, clearRows = true) {
+      console.error(error);
+      setStatus(`ERROR: ${error.message || error}`, true);
+
+      if (clearRows) {
+        $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込みに失敗しました。</td></tr>';
+      }
+    }
+
+    function switchView(viewName) {
+      state.currentView = viewName;
+      $('#list-view').classList.toggle('view-hidden', viewName !== 'list');
+      $('#bi-view').classList.toggle('view-hidden', viewName !== 'bi');
+      document.querySelectorAll('.nav-item[data-view]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.view === viewName);
+      });
+
+      if (viewName === 'bi') {
+        document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+          item.classList.remove('active');
+        });
+        renderCorrelation().catch(handleError);
+      } else {
+        renderCounts();
+      }
+    }
+
+    $('#load-button').addEventListener('click', () => {
+      loadSpreadsheet().catch(handleError);
+    });
+
+    $('#refresh-button').addEventListener('click', () => {
+      refreshFromYouTube().catch((error) => handleError(error, false));
+    });
+
+    $('#prev-button').addEventListener('click', () => {
+      renderPage(state.currentPage - 1).catch(handleError);
+    });
+
+    $('#next-button').addEventListener('click', () => {
+      renderPage(state.currentPage + 1).catch(handleError);
+    });
+
+    $('#live-filter').addEventListener('change', () => {
+      state.filterValue = $('#live-filter').value;
+      state.currentPage = 1;
+
+      refreshCounts()
+        .then(() => renderPage(1))
+        .catch(handleError);
+    });
+
+    function selectFilter(value) {
+      if (!state.conn) return;
+
+      state.filterValue = value;
+      state.currentPage = 1;
+      $('#live-filter').value = value;
+      switchView('list');
+
+      refreshCounts()
+        .then(() => renderPage(1))
+        .catch(handleError);
+    }
+
+    document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+      item.addEventListener('click', () => {
+        selectFilter(item.dataset.filter);
+      });
+
+      item.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          selectFilter(item.dataset.filter);
+        }
+      });
+    });
+
+    document.querySelectorAll('.nav-item[data-view]').forEach((item) => {
+      item.addEventListener('click', () => {
+        switchView(item.dataset.view);
+      });
+
+      item.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          switchView(item.dataset.view);
+        }
+      });
+    });
+
+    $('#bi-list-button').addEventListener('click', () => {
+      switchView('list');
+    });
+
+    $('#correlation-templates').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-template-id]');
+      if (!button) return;
+
+      const template = CORRELATION_TEMPLATES.find((item) => item.id === button.dataset.templateId);
+      if (template) {
+        applyCorrelationTemplate(template);
+      }
+    });
+
+    $('#run-correlation').addEventListener('click', () => {
+      state.activeCorrelationTemplate = '';
+      renderCorrelationTemplates();
+      renderCorrelation().catch(handleError);
+    });
+
+    ['x-metric', 'y-metric', 'color-metric', 'bi-filter', 'point-limit', 'x-log', 'y-log', 'trim-outliers'].forEach((id) => {
+      $(`#${id}`).addEventListener('change', () => {
+        state.activeCorrelationTemplate = '';
+        renderCorrelationTemplates();
+        renderCorrelation().catch(handleError);
+      });
+    });
+
+    $('#bi-keyword').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        renderCorrelation().catch(handleError);
+      }
+    });
+
+    $('#tbody').addEventListener('click', (event) => {
+      const row = event.target.closest('tr[data-video-url]');
+      const url = row?.dataset.videoUrl;
+
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+      }
+    });
+
+    $('#tbody').addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+
+      const row = event.target.closest('tr[data-video-url]');
+      const url = row?.dataset.videoUrl;
+
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+      }
+    });
+
+    $('#correlation-outliers').addEventListener('click', (event) => {
+      const row = event.target.closest('tr[data-video-url]');
+      const url = row?.dataset.videoUrl;
+
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+      }
+    });
+
+    $('#correlation-canvas').addEventListener('click', (event) => {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const scaleX = event.currentTarget.width / rect.width;
+      const scaleY = event.currentTarget.height / rect.height;
+      const x = (event.clientX - rect.left) * scaleX;
+      const y = (event.clientY - rect.top) * scaleY;
+      const hit = state.correlationPoints.find((point) => {
+        const dx = point.cx - x;
+        const dy = point.cy - y;
+        return Math.sqrt((dx * dx) + (dy * dy)) <= 8;
+      });
+
+      if (hit?.videoUrl) {
+        window.open(hit.videoUrl, '_blank', 'noopener');
+      }
+    });
+
+    initializeBiControls();
+    loadSpreadsheet().catch(handleError);
+  </script>

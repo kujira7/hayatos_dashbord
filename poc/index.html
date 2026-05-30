@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 24px;
+      background: #f7f7f7;
+      color: #222;
+    }
+
+    h1 {
+      margin-bottom: 8px;
+      font-size: 22px;
+    }
+
+    button {
+      margin: 16px 0 12px;
+      padding: 8px 14px;
+      border: 1px solid #222;
+      border-radius: 4px;
+      background: #222;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pager {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 0 0 12px;
+    }
+
+    .page-info {
+      min-width: 180px;
+      font-variant-numeric: tabular-nums;
+      font-size: 14px;
+    }
+
+    #status {
+      margin: 12px 0;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #fff;
+      border: 1px solid #ddd;
+    }
+
+    #health {
+      background: #111;
+      color: #eee;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+      min-height: 42px;
+    }
+
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      margin-top: 16px;
+      border: 1px solid #ddd;
+      background: #fff;
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 8px;
+      border-bottom: 1px solid #eee;
+      vertical-align: middle;
+      text-align: left;
+      font-size: 14px;
+      max-width: 360px;
+      overflow-wrap: anywhere;
+    }
+
+    th {
+      background: #fafafa;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .thumb {
+      width: 120px;
+      height: 68px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #ddd;
+      display: block;
+    }
+
+    .muted {
+      color: #777;
+      font-size: 12px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>DuckDB-Wasm on GAS Web App PoC</h1>
+  <div class="muted">
+    Google Drive上のParquetをGASで取得し、DuckDB-Wasmのread_parquetでSQL検索します。
+  </div>
+
+  <div class="actions">
+    <button id="load-button" type="button">再読み込み</button>
+  </div>
+
+  <div id="status">初期化中...</div>
+  <pre id="health"></pre>
+
+  <div class="pager">
+    <button id="prev-button" type="button" disabled>前へ</button>
+    <span id="page-info" class="page-info">-</span>
+    <button id="next-button" type="button" disabled>次へ</button>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <script type="module">
+    import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
+
+    const PARQUET_PATH = 'drive.parquet';
+    const PAGE_SIZE = 200;
+    const $ = (selector) => document.querySelector(selector);
+    const state = {
+      db: null,
+      conn: null,
+      file: null,
+      schemaRows: [],
+      rowCount: 0,
+      currentPage: 1,
+      totalPages: 1
+    };
+
+    function setStatus(message) {
+      $('#status').textContent = message;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      }[ch]));
+    }
+
+    function formatCell(value) {
+      if (value === null || value === undefined) return '';
+      if (typeof value === 'bigint') return value.toString();
+      if (value instanceof Date) return value.toLocaleString('ja-JP');
+      if (typeof value === 'object') {
+        return JSON.stringify(value, (_key, item) => (
+          typeof item === 'bigint' ? item.toString() : item
+        ));
+      }
+      return String(value);
+    }
+
+    function isNumeric(value) {
+      return typeof value === 'number' || typeof value === 'bigint';
+    }
+
+    function renderCell(column, value) {
+      if (column === 'thumbnail_url' && value) {
+        const src = escapeHtml(value);
+
+        return `
+          <img
+            class="thumb"
+            src="${src}"
+            loading="lazy"
+            decoding="async"
+            width="120"
+            height="68"
+            onerror="this.style.display='none'"
+          >
+        `;
+      }
+
+      return escapeHtml(formatCell(value));
+    }
+
+    function gasRun(functionName, ...args) {
+      return new Promise((resolve, reject) => {
+        window.google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(reject)[functionName](...args);
+      });
+    }
+
+    function base64ToBytes(base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+
+      return bytes;
+    }
+
+    async function createDuckDB() {
+      const bundles = duckdb.getJsDelivrBundles();
+
+      // ブラウザ環境に合うbundleを自動選択する。
+      const bundle = await duckdb.selectBundle(bundles);
+
+      // CDN上のworkerを直接 new Worker(url) すると同一オリジン制約に当たりやすい。
+      // DuckDB公式例と同じく、Blob URL経由でimportScriptsする。
+      const workerUrl = URL.createObjectURL(
+        new Blob(
+          [`importScripts("${bundle.mainWorker}");`],
+          { type: 'text/javascript' }
+        )
+      );
+
+      const worker = new Worker(workerUrl);
+      const logger = new duckdb.ConsoleLogger();
+      const db = new duckdb.AsyncDuckDB(logger, worker);
+
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      URL.revokeObjectURL(workerUrl);
+
+      return db;
+    }
+
+    function arrowRows(result) {
+      return result.toArray().map((row) => row.toJSON());
+    }
+
+    function renderRows(rows, schemaRows) {
+      const columns = schemaRows.map((row) => row.column_name);
+
+      $('#thead').innerHTML = columns.length === 0
+        ? ''
+        : `<tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join('')}</tr>`;
+
+      $('#tbody').innerHTML = rows.map((row) => `
+        <tr>
+          ${columns.map((column) => {
+            const value = row[column];
+            const className = isNumeric(value) ? ' class="num"' : '';
+            return `<td${className}>${renderCell(column, value)}</td>`;
+          }).join('')}
+        </tr>
+      `).join('');
+    }
+
+    function renderPager() {
+      const start = state.rowCount === 0
+        ? 0
+        : ((state.currentPage - 1) * PAGE_SIZE) + 1;
+      const end = Math.min(state.currentPage * PAGE_SIZE, state.rowCount);
+
+      $('#page-info').textContent = state.rowCount === 0
+        ? '0件'
+        : `${start.toLocaleString('ja-JP')}-${end.toLocaleString('ja-JP')} / ${state.rowCount.toLocaleString('ja-JP')}件`;
+
+      $('#prev-button').disabled = state.currentPage <= 1;
+      $('#next-button').disabled = state.currentPage >= state.totalPages;
+    }
+
+    function renderMetadata(file, schemaRows, rowCount) {
+      const schema = schemaRows.map((row) => ({
+        column_name: row.column_name,
+        column_type: row.column_type,
+        null: row.null
+      }));
+
+      $('#health').textContent = JSON.stringify({
+        file: {
+          path: file.path,
+          id: file.id,
+          name: file.name,
+          mimeType: file.mimeType,
+          size: file.size
+        },
+        pageSize: PAGE_SIZE,
+        rowCount: String(rowCount),
+        schema
+      }, null, 2);
+    }
+
+    function getOrderBySql() {
+      return state.schemaRows.some((row) => row.column_name === 'peak_concurrent_viewers')
+        ? 'ORDER BY peak_concurrent_viewers DESC'
+        : '';
+    }
+
+    async function renderPage(page) {
+      state.currentPage = Math.max(1, Math.min(page, state.totalPages));
+      const offset = (state.currentPage - 1) * PAGE_SIZE;
+      const orderBySql = getOrderBySql();
+
+      setStatus(`ページ ${state.currentPage.toLocaleString('ja-JP')} を取得中...`);
+
+      const rows = arrowRows(await state.conn.query(`
+        SELECT *
+        FROM parquet_rows
+        ${orderBySql}
+        LIMIT ${PAGE_SIZE}
+        OFFSET ${offset}
+      `));
+
+      renderRows(rows, state.schemaRows);
+      renderPager();
+
+      setStatus(`OK: ${state.rowCount.toLocaleString('ja-JP')} 件中 ${rows.length} 件を表示しています。`);
+    }
+
+    async function loadParquet() {
+      $('#load-button').disabled = true;
+      $('#prev-button').disabled = true;
+      $('#next-button').disabled = true;
+      $('#thead').innerHTML = '';
+      $('#tbody').innerHTML = '';
+      $('#health').textContent = '';
+
+      try {
+        if (state.conn) {
+          await state.conn.close();
+          state.conn = null;
+        }
+
+        setStatus('GASサーバーでDrive上のParquetを取得中...');
+        const file = await gasRun('getDriveParquetFile');
+        const bytes = base64ToBytes(file.base64);
+
+        if (!state.db) {
+          setStatus('DuckDB-Wasmを初期化中...');
+          state.db = await createDuckDB();
+        }
+
+        setStatus('ParquetをDuckDB-Wasmに登録中...');
+        await state.db.registerFileBuffer(PARQUET_PATH, bytes);
+
+        setStatus('DuckDB connectionを作成中...');
+        state.conn = await state.db.connect();
+
+        setStatus('read_parquetでschemaと件数を取得中...');
+        await state.conn.query(`CREATE OR REPLACE VIEW parquet_rows AS SELECT * FROM read_parquet('${PARQUET_PATH}')`);
+
+        state.file = file;
+        state.schemaRows = arrowRows(await state.conn.query('DESCRIBE SELECT * FROM parquet_rows'));
+
+        const countRows = arrowRows(await state.conn.query('SELECT count(*)::VARCHAR AS row_count FROM parquet_rows'));
+        state.rowCount = Number(countRows[0].row_count);
+        state.currentPage = 1;
+        state.totalPages = Math.max(1, Math.ceil(state.rowCount / PAGE_SIZE));
+
+        renderMetadata(file, state.schemaRows, state.rowCount);
+        await renderPage(1);
+      } finally {
+        $('#load-button').disabled = false;
+      }
+    }
+
+    $('#load-button').addEventListener('click', () => {
+      loadParquet().catch((error) => {
+        console.error(error);
+        setStatus(`ERROR: ${error.message || error}`);
+        $('#health').textContent = String(error.stack || error);
+      });
+    });
+
+    $('#prev-button').addEventListener('click', () => {
+      renderPage(state.currentPage - 1).catch((error) => {
+        console.error(error);
+        setStatus(`ERROR: ${error.message || error}`);
+        $('#health').textContent = String(error.stack || error);
+      });
+    });
+
+    $('#next-button').addEventListener('click', () => {
+      renderPage(state.currentPage + 1).catch((error) => {
+        console.error(error);
+        setStatus(`ERROR: ${error.message || error}`);
+        $('#health').textContent = String(error.stack || error);
+      });
+    });
+
+    loadParquet().catch((error) => {
+      console.error(error);
+      setStatus(`ERROR: ${error.message || error}`);
+      $('#health').textContent = String(error.stack || error);
+    });
+  </script>
+</body>
+</html>
