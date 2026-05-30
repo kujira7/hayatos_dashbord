@@ -1,13 +1,22 @@
 function getDatasetCsv() {
   const totalStart = Date.now();
-  const readStart = Date.now();
-  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
-  const csv = file.getBlob().getDataAsString();
-  const metadata = readMetadata();
-  const readMs = Date.now() - readStart;
 
+  const getFileStart = Date.now();
+  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
+  const getFileMs = Date.now() - getFileStart;
+
+  const readCsvStart = Date.now();
+  const csv = file.getBlob().getDataAsString();
+  const readCsvMs = Date.now() - readCsvStart;
+
+  const readMetadataStart = Date.now();
+  const metadata = readMetadata();
+  const readMetadataMs = Date.now() - readMetadataStart;
+
+  const validateStart = Date.now();
   validateCsv(csv, VIDEO_CSV_FILE_NAME);
   const csvBytes = getCsvBytes(csv);
+  const validateCsvMs = Date.now() - validateStart;
 
   return {
     csvFile: {
@@ -22,7 +31,10 @@ function getDatasetCsv() {
     csvBytes,
     csv,
     serverTimingsMs: {
-      readCsv: readMs,
+      getFile: getFileMs,
+      readCsv: readCsvMs,
+      readMetadata: readMetadataMs,
+      validateCsv: validateCsvMs,
       total: Date.now() - totalStart
     }
   };

@@ -95,6 +95,48 @@
       });
     }
 
+    function formatMs(value) {
+      if (!Number.isFinite(value)) {
+        return '-';
+      }
+
+      return `${Math.round(value).toLocaleString('ja-JP')}ms`;
+    }
+
+    async function measureTiming(timings, label, operation) {
+      const start = performance.now();
+
+      try {
+        return await operation();
+      } finally {
+        timings[label] = performance.now() - start;
+      }
+    }
+
+    function logLoadTimings(timings, dataset) {
+      const payload = {
+        client: Object.fromEntries(
+          Object.entries(timings).map(([key, value]) => [key, Math.round(value)])
+        ),
+        server: dataset?.serverTimingsMs || {},
+        csvBytes: dataset?.csvBytes,
+        dataRowCount: dataset?.dataRowCount
+      };
+
+      console.info('Initial load timings', payload);
+    }
+
+    function formatLoadTimingStatus(timings, dataset) {
+      const serverTotal = dataset?.serverTimingsMs?.total;
+
+      return [
+        `total ${formatMs(timings.total)}`,
+        `GAS ${formatMs(timings.getDatasetCsv)}`,
+        `server ${formatMs(serverTotal)}`,
+        `DuckDB ${formatMs(timings.createDuckDB)}`
+      ].join(' / ');
+    }
+
     async function createDuckDB() {
       const bundles = duckdb.getJsDelivrBundles();
       const bundle = await duckdb.selectBundle(bundles);
@@ -1178,6 +1220,9 @@
     }
 
     async function loadSpreadsheet() {
+      const timings = {};
+      const totalStart = performance.now();
+
       $('#load-button').disabled = true;
       $('#refresh-button').disabled = true;
       $('#prev-button').disabled = true;
@@ -1191,37 +1236,43 @@
           state.conn = null;
         }
 
-        setStatus('CSVを読み込み中...');
-        const dataset = await gasRun('getDatasetCsv');
+        setStatus('CSV読み込みとDuckDB-Wasm初期化中...');
+        const datasetPromise = measureTiming(timings, 'getDatasetCsv', () => gasRun('getDatasetCsv'));
+        const dbPromise = state.db
+          ? Promise.resolve(state.db)
+          : measureTiming(timings, 'createDuckDB', () => createDuckDB());
+        const [dataset, db] = await Promise.all([datasetPromise, dbPromise]);
 
-        if (!state.db) {
-          setStatus('DuckDB-Wasmを初期化中...');
-          state.db = await createDuckDB();
-        }
+        state.db = db;
+        timings.createDuckDB = timings.createDuckDB || 0;
 
         setStatus('CSVをDuckDB-Wasmに登録中...');
-        await state.db.registerFileText(CSV_PATH, dataset.csv);
+        await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
 
         setStatus('DuckDB connectionを作成中...');
-        state.conn = await state.db.connect();
+        state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
 
         setStatus('read_csv_autoでviewを作成中...');
-        await state.conn.query(`
+        await measureTiming(timings, 'createVideosView', () => state.conn.query(`
           CREATE OR REPLACE VIEW videos AS
           SELECT *
           FROM read_csv_auto('${CSV_PATH}', header = true)
-        `);
-        await createBiView();
+        `));
+        await measureTiming(timings, 'createBiView', () => createBiView());
 
         state.dataset = dataset;
 
-        await refreshCounts();
-        await refreshFilterOptions();
+        await measureTiming(timings, 'refreshCounts', () => refreshCounts());
+        await measureTiming(timings, 'refreshFilterOptions', () => refreshFilterOptions());
         $('#live-filter').value = state.filterValue;
         renderCorrelationTemplates();
-        await refreshBiFilterOptions();
-        await renderPage(1);
-        await renderCorrelation();
+        await measureTiming(timings, 'refreshBiFilterOptions', () => refreshBiFilterOptions());
+        await measureTiming(timings, 'renderPage', () => renderPage(1));
+        await measureTiming(timings, 'renderCorrelation', () => renderCorrelation());
+
+        timings.total = performance.now() - totalStart;
+        logLoadTimings(timings, dataset);
+        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。${formatLoadTimingStatus(timings, dataset)}`);
       } finally {
         if (state.conn) {
           renderPager();
