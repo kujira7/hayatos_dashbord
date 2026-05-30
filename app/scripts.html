@@ -7,9 +7,8 @@
     const BI_METRICS = {
       duration_sec_num: { label: '動画の長さ', format: formatDuration },
       view_count_num: { label: '閲覧数', format: formatNumber },
-      like_rate: { label: 'Like率', format: formatPercent },
-      comment_rate: { label: 'コメント率', format: formatPercent },
-      engagement_rate: { label: '反応率', format: formatPercent },
+      like_count_num: { label: 'Like数', format: formatNumber },
+      comment_count_num: { label: 'コメント数', format: formatNumber },
       published_hour_num: { label: '公開時刻', format: formatHour },
       peak_concurrent_viewers_num: { label: '最大同接(API)', format: formatNumber }
     };
@@ -24,19 +23,10 @@
         filter: 'category:all'
       },
       {
-        id: 'engagement_views',
-        title: '反応率が高い動画は伸びる？',
-        meta: 'X: 反応率 / Y: 閲覧数',
-        x: 'engagement_rate',
-        y: 'view_count_num',
-        color: 'video_type',
-        filter: 'category:all'
-      },
-      {
         id: 'like_views',
-        title: 'Like率と伸びの関係',
-        meta: 'X: Like率 / Y: 閲覧数',
-        x: 'like_rate',
+        title: 'Like数と伸びの関係',
+        meta: 'X: Like数 / Y: 閲覧数',
+        x: 'like_count_num',
         y: 'view_count_num',
         color: 'video_type',
         filter: 'category:all'
@@ -44,8 +34,8 @@
       {
         id: 'comment_views',
         title: 'コメントが多い動画は伸びる？',
-        meta: 'X: コメント率 / Y: 閲覧数',
-        x: 'comment_rate',
+        meta: 'X: コメント数 / Y: 閲覧数',
+        x: 'comment_count_num',
         y: 'view_count_num',
         color: 'video_type',
         filter: 'category:all'
@@ -171,13 +161,6 @@
       const number = Number(value);
       if (!Number.isFinite(number)) return '-';
       return number.toLocaleString('ja-JP', { maximumFractionDigits: 1 });
-    }
-
-    function formatPercent(value) {
-      if (value === null || value === undefined || value === '') return '-';
-      const number = Number(value);
-      if (!Number.isFinite(number)) return '-';
-      return `${(number * 100).toLocaleString('ja-JP', { maximumFractionDigits: 2 })}%`;
     }
 
     function formatHour(value) {
@@ -465,10 +448,7 @@
           FROM base
         )
         SELECT
-          *,
-          like_count_num / NULLIF(view_count_num, 0) AS like_rate,
-          comment_count_num / NULLIF(view_count_num, 0) AS comment_rate,
-          (like_count_num + comment_count_num) / NULLIF(view_count_num, 0) AS engagement_rate
+          *
         FROM enriched
       `);
     }
@@ -812,7 +792,6 @@
 
     function formatAxisTick(value, metric) {
       if (metric === 'duration_sec_num') return formatDuration(value);
-      if (metric === 'like_rate' || metric === 'comment_rate' || metric === 'engagement_rate') return formatPercent(value);
       if (metric === 'published_hour_num') return formatHour(value);
 
       return formatCompactNumber(value);
