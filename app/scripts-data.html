@@ -1,0 +1,129 @@
+    async function loadSpreadsheet(options = {}) {
+      const { clearCache = false } = options;
+      const timings = {};
+      const totalStart = performance.now();
+      let renderedFromCache = false;
+
+      setDatasetControlsDisabled(true);
+      $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込み中...</td></tr>';
+
+      try {
+        if (state.conn) {
+          await state.conn.close();
+          state.conn = null;
+        }
+
+        if (clearCache) {
+          setStatus('キャッシュをクリアして再読み込み中...', { type: 'loading' });
+          await measureTiming(timings, 'clearCache', () => clearCachedDataset());
+        }
+
+        const cachedRecord = clearCache
+          ? null
+          : await measureTiming(timings, 'readCache', () => readCachedDataset());
+
+        if (cachedRecord) {
+          setStatus('キャッシュから表示中。最新確認中...', { type: 'loading' });
+          const cachedDataset = cachedRecordToDataset(cachedRecord);
+          const db = state.db || await measureTiming(timings, 'createDuckDB', () => createDuckDB());
+
+          state.db = db;
+          await loadDatasetIntoDuckDB(cachedDataset, timings);
+          timings.total = performance.now() - totalStart;
+          renderedFromCache = true;
+          logLoadTimings(timings, cachedDataset);
+          setStatus(`キャッシュから表示中。最新確認中。${formatLoadTimingStatus(timings, cachedDataset)}`, { type: 'loading' });
+        }
+
+        const manifest = renderedFromCache
+          ? await measureTiming(timings, 'getDatasetManifest', () => gasRun('getDatasetManifest'))
+          : null;
+
+        if (renderedFromCache && isCachedDatasetFresh(cachedRecord, manifest)) {
+          timings.total = performance.now() - totalStart;
+          state.dataset.serverTimingsMs = manifest.serverTimingsMs;
+          logLoadTimings(timings, state.dataset);
+          setStatus(`最新確認済み。${formatLoadTimingStatus(timings, state.dataset)}`, { type: 'success' });
+          return;
+        }
+
+        setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...', { type: 'loading' });
+        const datasetPromise = measureTiming(timings, 'getDatasetCsv', () => gasRun('getDatasetCsv'));
+        const dbPromise = state.db
+          ? Promise.resolve(state.db)
+          : measureTiming(timings, 'createDuckDB', () => createDuckDB());
+        const [dataset, db] = await Promise.all([datasetPromise, dbPromise]);
+
+        state.db = db;
+        timings.createDuckDB = timings.createDuckDB || 0;
+
+        await loadDatasetIntoDuckDB(dataset, timings);
+        await measureTiming(timings, 'writeCache', () => writeCachedDataset(dataset));
+
+        timings.total = performance.now() - totalStart;
+        logLoadTimings(timings, dataset);
+        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。${formatLoadTimingStatus(timings, dataset)}`, { type: 'success' });
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        setDatasetControlsDisabled(false);
+      }
+    }
+
+    async function loadDatasetIntoDuckDB(dataset, timings) {
+      if (state.conn) {
+        await state.conn.close();
+        state.conn = null;
+      }
+
+      setStatus('CSVをDuckDB-Wasmに登録中...', { type: 'loading' });
+      await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
+
+      setStatus('DuckDB connectionを作成中...', { type: 'loading' });
+      state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
+
+      setStatus('read_csv_autoでviewを作成中...', { type: 'loading' });
+      await measureTiming(timings, 'createVideosView', () => state.conn.query(`
+        CREATE OR REPLACE VIEW videos AS
+        SELECT *
+        FROM read_csv_auto('${CSV_PATH}', header = true)
+      `));
+      await measureTiming(timings, 'createBiView', () => createBiView());
+
+      state.dataset = dataset;
+
+      await measureTiming(timings, 'refreshCounts', () => refreshCounts());
+      await measureTiming(timings, 'refreshFilterOptions', () => refreshFilterOptions());
+      $('#live-filter').value = state.filterValue;
+      renderCorrelationTemplates();
+      await measureTiming(timings, 'refreshBiFilterOptions', () => refreshBiFilterOptions());
+      await measureTiming(timings, 'renderPage', () => renderPage(1));
+      await measureTiming(timings, 'renderCorrelation', () => renderCorrelation());
+    }
+
+    async function refreshFromYouTube() {
+      setDatasetControlsDisabled(true);
+
+      try {
+        setStatus('YouTubeから全データ再取得中...', { type: 'loading' });
+        await gasRun('manualRefresh');
+        await loadSpreadsheet();
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        setDatasetControlsDisabled(false);
+      }
+    }
+
+    function handleError(error, clearRows = true) {
+      console.error(error);
+      setStatus(`ERROR: ${error.message || error}`, { type: 'error' });
+
+      if (clearRows) {
+        $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込みに失敗しました。</td></tr>';
+      }
+    }

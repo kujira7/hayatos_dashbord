@@ -1,0 +1,182 @@
+    function renderRows(rows) {
+      if (rows.length === 0) {
+        $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">表示できる動画がありません。</td></tr>';
+        return;
+      }
+
+      $('#tbody').innerHTML = rows.map((row) => {
+        const videoUrl = escapeHtml(row.video_id ? `https://www.youtube.com/watch?v=${row.video_id}` : '');
+        const thumb = escapeHtml(row.thumbnail_url);
+        const title = escapeHtml(row.title);
+        const published = escapeHtml(formatDate(row.published_at));
+        const duration = escapeHtml(formatDuration(row.duration_sec));
+        const liveType = escapeHtml(normalizeVideoType(row.live_type, row.duration_sec));
+        const visibility = escapeHtml(normalizeVisibility(row.visibility));
+        const views = escapeHtml(formatNumber(row.view_count));
+        const likes = escapeHtml(formatNumber(row.like_count));
+        const comments = escapeHtml(formatNumber(row.comment_count));
+        const peak = escapeHtml(formatNumber(row.peak_concurrent_viewers));
+
+        return `
+          <tr class="clickable-row" data-video-url="${videoUrl}" tabindex="0">
+            <td>
+              <div class="video-cell">
+                <img
+                  class="thumb"
+                  src="${thumb}"
+                  loading="lazy"
+                  decoding="async"
+                  width="76"
+                  height="43"
+                  onerror="this.style.display='none'"
+                >
+                <div>
+                  <div class="title" title="${title}">${title}</div>
+                  <div class="video-meta">- ${duration} ・ ${liveType}</div>
+                </div>
+              </div>
+            </td>
+            <td class="date-cell">${published}</td>
+            <td><span class="badge badge-live">${liveType}</span></td>
+            <td><span class="badge badge-public">${visibility}</span></td>
+            <td class="number-cell right">${views}</td>
+            <td class="number-cell right">${likes}</td>
+            <td class="number-cell right">${comments}</td>
+            <td class="number-cell right">${peak}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderCounts() {
+      const filtered = state.filteredCount.toLocaleString('ja-JP');
+      const filterLabel = getFilterLabel();
+
+      $('#side-normal-count').textContent = state.categoryCounts.normal.toLocaleString('ja-JP');
+      $('#side-shorts-count').textContent = state.categoryCounts.shorts.toLocaleString('ja-JP');
+      $('#side-live-count').textContent = state.categoryCounts.live.toLocaleString('ja-JP');
+      document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.filter === state.filterValue);
+      });
+      $('#page-title').textContent = filterLabel;
+      $('#summary').textContent = `全期間 | ${filterLabel} | 全 ${filtered} 本 | ${formatYoutubeFinishedAtSummary()}`;
+    }
+
+    function renderPager() {
+      const start = state.filteredCount === 0
+        ? 0
+        : ((state.currentPage - 1) * state.pageSize) + 1;
+      const end = Math.min(state.currentPage * state.pageSize, state.filteredCount);
+      const pageText = state.filteredCount === 0
+        ? '0件'
+        : `${start.toLocaleString('ja-JP')}-${end.toLocaleString('ja-JP')} / ${state.filteredCount.toLocaleString('ja-JP')}件`;
+
+      document.querySelectorAll('.page-info').forEach((element) => {
+        element.textContent = pageText;
+      });
+      document.querySelectorAll('[data-page-action="prev"]').forEach((button) => {
+        button.disabled = state.currentPage <= 1;
+      });
+      document.querySelectorAll('[data-page-action="next"]').forEach((button) => {
+        button.disabled = state.currentPage >= state.totalPages;
+      });
+    }
+
+    function renderSortHeaders() {
+      document.querySelectorAll('th[data-sort-key]').forEach((header) => {
+        const active = header.dataset.sortKey === state.sortKey;
+        header.classList.toggle('active-sort', active);
+        header.dataset.sortDirection = active ? state.sortDirection : '';
+      });
+    }
+
+    function setPagerButtonsDisabled(disabled) {
+      document.querySelectorAll('[data-page-action]').forEach((button) => {
+        button.disabled = disabled;
+      });
+    }
+
+    function setDatasetControlsDisabled(disabled) {
+      $('#load-button').disabled = disabled;
+      $('#refresh-button').disabled = disabled;
+      $('#live-filter').disabled = disabled;
+      $('#page-size-select').disabled = disabled;
+
+      if (disabled) {
+        setPagerButtonsDisabled(true);
+      } else if (state.conn) {
+        renderPager();
+      }
+    }
+
+    async function refreshFilterOptions() {
+      $('#live-filter').innerHTML = CATEGORY_FILTER_ORDER.map((value) => {
+        const filter = getCategoryFilter(value);
+        const count = getCategoryCount(filter).toLocaleString('ja-JP');
+
+        return `<option value="${value}">${filter.label} (${count})</option>`;
+      }).join('');
+    }
+
+    async function refreshCategoryCounts() {
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          count(*)::VARCHAR AS total_count,
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = 'LIVE' THEN 1 ELSE 0 END)::VARCHAR AS live_count,
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = 'Shorts' THEN 1 ELSE 0 END)::VARCHAR AS shorts_count,
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = '通常動画' THEN 1 ELSE 0 END)::VARCHAR AS normal_count
+        FROM videos
+      `));
+      const row = rows[0] || {};
+
+      state.rowCount = Number(row.total_count || 0);
+      state.categoryCounts = {
+        normal: Number(row.normal_count || 0),
+        shorts: Number(row.shorts_count || 0),
+        live: Number(row.live_count || 0)
+      };
+    }
+
+    async function refreshCounts() {
+      await refreshCategoryCounts();
+      const filteredRows = arrowRows(await state.conn.query(`
+        SELECT count(*)::VARCHAR AS row_count
+        FROM videos
+        ${getWhereSql()}
+      `));
+
+      state.filteredCount = Number(filteredRows[0].row_count);
+      state.totalPages = Math.max(1, Math.ceil(state.filteredCount / state.pageSize));
+      state.currentPage = Math.min(state.currentPage, state.totalPages);
+      renderCounts();
+      renderPager();
+      renderSortHeaders();
+    }
+
+    async function renderPage(page) {
+      state.currentPage = Math.max(1, Math.min(page, state.totalPages));
+      const offset = (state.currentPage - 1) * state.pageSize;
+
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          thumbnail_url,
+          video_id,
+          title,
+          published_at,
+          duration_sec,
+          live_type,
+          visibility,
+          view_count,
+          like_count,
+          comment_count,
+          peak_concurrent_viewers
+        FROM videos
+        ${getWhereSql()}
+        ${getOrderBySql()}
+        LIMIT ${state.pageSize}
+        OFFSET ${offset}
+      `));
+
+      renderRows(rows);
+      renderPager();
+    }

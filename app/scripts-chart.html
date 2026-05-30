@@ -1,0 +1,386 @@
+    function formatAxisTick(value, metric) {
+      if (metric === 'duration_sec_num') return formatDuration(value);
+      if (metric === 'published_hour_num') return formatHour(value);
+
+      return formatCompactNumber(value);
+    }
+
+    function formatCompactNumber(value) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) return '-';
+      if (Math.abs(number) >= 1000000) return `${(number / 1000000).toLocaleString('ja-JP', { maximumFractionDigits: 1 })}M`;
+      if (Math.abs(number) >= 1000) return `${(number / 1000).toLocaleString('ja-JP', { maximumFractionDigits: 1 })}K`;
+      if (Math.abs(number) >= 10) return number.toLocaleString('ja-JP', { maximumFractionDigits: 0 });
+      return number.toLocaleString('ja-JP', { maximumFractionDigits: 2 });
+    }
+
+    function drawAxisTicks(ctx, minX, maxX, minY, maxY, xToCanvas, yToCanvas, padding, plotWidth, plotHeight, xMetric, yMetric) {
+      const tickCount = 5;
+
+      ctx.font = '11px Arial';
+      ctx.strokeStyle = '#22272e';
+      ctx.fillStyle = '#8f98a6';
+      ctx.lineWidth = 1;
+
+      for (let index = 0; index < tickCount; index += 1) {
+        const ratio = tickCount === 1 ? 0 : index / (tickCount - 1);
+        const xValue = minX + ((maxX - minX) * ratio);
+        const x = xToCanvas(xValue);
+
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, padding.top + plotHeight);
+        ctx.stroke();
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(formatAxisTick(xValue, xMetric), x, padding.top + plotHeight + 8);
+
+        const yValue = minY + ((maxY - minY) * ratio);
+        const y = yToCanvas(yValue);
+
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + plotWidth, y);
+        ctx.stroke();
+
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(formatAxisTick(yValue, yMetric), padding.left - 8, y);
+      }
+    }
+
+    function createPlotContext(points, xMetric, yMetric) {
+      const canvas = $('#correlation-canvas');
+      const ctx = canvas.getContext('2d');
+      const width = canvas.width;
+      const height = canvas.height;
+      const padding = { top: 24, right: 28, bottom: 52, left: 72 };
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#0d1116';
+      ctx.fillRect(0, 0, width, height);
+
+      if (points.length === 0) {
+        ctx.fillStyle = '#8f98a6';
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('表示できる点がありません。', width / 2, height / 2);
+        state.correlationPoints = [];
+        return null;
+      }
+
+      const xs = points.map((point) => point.xPlot);
+      const ys = points.map((point) => point.yPlot);
+      let minX = Math.min(...xs);
+      let maxX = Math.max(...xs);
+      let minY = Math.min(...ys);
+      let maxY = Math.max(...ys);
+
+      if (minX === maxX) {
+        minX -= 1;
+        maxX += 1;
+      }
+
+      if (minY === maxY) {
+        minY -= 1;
+        maxY += 1;
+      }
+
+      const xToCanvas = (value) => padding.left + ((value - minX) / (maxX - minX)) * plotWidth;
+      const yToCanvas = (value) => padding.top + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+
+      drawAxisTicks(ctx, minX, maxX, minY, maxY, xToCanvas, yToCanvas, padding, plotWidth, plotHeight, xMetric, yMetric);
+
+      ctx.strokeStyle = '#2b3038';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, padding.top + plotHeight);
+      ctx.lineTo(padding.left + plotWidth, padding.top + plotHeight);
+      ctx.stroke();
+
+      ctx.fillStyle = '#9aa3af';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(BI_METRICS[xMetric].label, padding.left + plotWidth / 2, height - 14);
+      ctx.save();
+      ctx.translate(16, padding.top + plotHeight / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(BI_METRICS[yMetric].label, 0, 0);
+      ctx.restore();
+
+      return {
+        ctx,
+        padding,
+        plotWidth,
+        plotHeight,
+        minX,
+        maxX,
+        minY,
+        maxY,
+        xToCanvas,
+        yToCanvas
+      };
+    }
+
+    function drawScatter(points, xMetric, yMetric) {
+      const plot = createPlotContext(points, xMetric, yMetric);
+      const palette = ['#4aa3ff', '#f7b84b', '#7bd88f', '#e078d8', '#ff7a7a', '#9d8cff'];
+      const colorMap = {};
+
+      if (!plot) return;
+
+      state.correlationPoints = points.map((point) => {
+        const key = String(point.colorValue || '-');
+
+        if (!(key in colorMap)) {
+          colorMap[key] = palette[Object.keys(colorMap).length % palette.length];
+        }
+
+        const cx = plot.xToCanvas(point.xPlot);
+        const cy = plot.yToCanvas(point.yPlot);
+
+        plot.ctx.beginPath();
+        plot.ctx.fillStyle = colorMap[key];
+        plot.ctx.globalAlpha = 0.5;
+        plot.ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        plot.ctx.fill();
+        plot.ctx.globalAlpha = 1;
+
+        return { ...point, hitType: 'point', cx, cy };
+      });
+
+      const legendEntries = Object.entries(colorMap).slice(0, 6);
+      legendEntries.forEach(([label, color], index) => {
+        const x = plot.padding.left + 8;
+        const y = plot.padding.top + 16 + (index * 18);
+        plot.ctx.fillStyle = color;
+        plot.ctx.fillRect(x, y - 8, 10, 10);
+        plot.ctx.fillStyle = '#c7d0db';
+        plot.ctx.textAlign = 'left';
+        plot.ctx.fillText(label, x + 16, y);
+      });
+    }
+
+    function drawDensity(points, xMetric, yMetric) {
+      const plot = createPlotContext(points, xMetric, yMetric);
+      if (!plot) return;
+
+      const xBins = 42;
+      const yBins = 28;
+      const bins = new Map();
+
+      points.forEach((point) => {
+        const xIndex = Math.min(xBins - 1, Math.max(0, Math.floor(((point.xPlot - plot.minX) / (plot.maxX - plot.minX)) * xBins)));
+        const yIndex = Math.min(yBins - 1, Math.max(0, Math.floor(((point.yPlot - plot.minY) / (plot.maxY - plot.minY)) * yBins)));
+        const key = `${xIndex}:${yIndex}`;
+
+        if (!bins.has(key)) {
+          bins.set(key, {
+            hitType: 'bin',
+            xIndex,
+            yIndex,
+            count: 0,
+            examples: []
+          });
+        }
+
+        const bin = bins.get(key);
+        bin.count += 1;
+        if (bin.examples.length < 4) {
+          bin.examples.push(point);
+        }
+      });
+
+      const maxCount = Math.max(1, ...Array.from(bins.values()).map((bin) => bin.count));
+      const cellWidth = plot.plotWidth / xBins;
+      const cellHeight = plot.plotHeight / yBins;
+
+      state.correlationPoints = Array.from(bins.values()).map((bin) => {
+        const left = plot.padding.left + (bin.xIndex * cellWidth);
+        const top = plot.padding.top + ((yBins - 1 - bin.yIndex) * cellHeight);
+        const intensity = Math.log1p(bin.count) / Math.log1p(maxCount);
+        const alpha = 0.2 + (intensity * 0.72);
+        const xMin = plot.minX + ((bin.xIndex / xBins) * (plot.maxX - plot.minX));
+        const xMax = plot.minX + (((bin.xIndex + 1) / xBins) * (plot.maxX - plot.minX));
+        const yMin = plot.minY + ((bin.yIndex / yBins) * (plot.maxY - plot.minY));
+        const yMax = plot.minY + (((bin.yIndex + 1) / yBins) * (plot.maxY - plot.minY));
+
+        plot.ctx.fillStyle = `rgba(74, 163, 255, ${alpha})`;
+        plot.ctx.fillRect(left + 1, top + 1, Math.max(1, cellWidth - 2), Math.max(1, cellHeight - 2));
+
+        return {
+          ...bin,
+          left,
+          top,
+          width: cellWidth,
+          height: cellHeight,
+          xMin,
+          xMax,
+          yMin,
+          yMax
+        };
+      });
+
+      plot.ctx.fillStyle = '#c7d0db';
+      plot.ctx.font = '11px Arial';
+      plot.ctx.textAlign = 'left';
+      plot.ctx.fillText(`密度: 1セル最大 ${maxCount.toLocaleString('ja-JP')} 本`, plot.padding.left + 8, plot.padding.top + 16);
+    }
+
+    function renderTopVideos(points, xMetric, yMetric) {
+      const formatterX = BI_METRICS[xMetric].format;
+      const formatterY = BI_METRICS[yMetric].format;
+      const rows = [...points]
+        .sort((a, b) => Number(b.yRaw || 0) - Number(a.yRaw || 0))
+        .slice(0, 8);
+
+      if (rows.length === 0) {
+        $('#correlation-top-videos').innerHTML = '<tr><td class="empty" colspan="5">表示できる動画がありません。</td></tr>';
+        return;
+      }
+
+      $('#correlation-top-videos').innerHTML = rows.map((row) => `
+        <tr class="clickable-row" data-video-url="${escapeHtml(row.videoUrl)}" tabindex="0">
+          <td>${escapeHtml(row.title || '-')}</td>
+          <td class="right">${escapeHtml(formatterX(row.xRaw))}</td>
+          <td class="right">${escapeHtml(formatterY(row.yRaw))}</td>
+          <td>${escapeHtml(row.videoType || '-')}</td>
+          <td>${escapeHtml(formatDate(row.publishedAt))}</td>
+        </tr>
+      `).join('');
+    }
+
+    function findCorrelationPoint(event) {
+      const canvas = $('#correlation-canvas');
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (event.clientX - rect.left) * scaleX;
+      const y = (event.clientY - rect.top) * scaleY;
+
+      return state.correlationPoints.find((item) => {
+        if (item.hitType === 'bin') {
+          return (
+            x >= item.left &&
+            x <= item.left + item.width &&
+            y >= item.top &&
+            y <= item.top + item.height
+          );
+        }
+
+        const dx = item.cx - x;
+        const dy = item.cy - y;
+        return Math.sqrt((dx * dx) + (dy * dy)) <= 8;
+      });
+    }
+
+    function showCorrelationTooltip(event, point) {
+      const tooltip = $('#correlation-tooltip');
+      const panelRect = event.currentTarget.parentElement.getBoundingClientRect();
+      const xMetric = $('#x-metric').value;
+      const yMetric = $('#y-metric').value;
+
+      if (point.hitType === 'bin') {
+        const examples = point.examples
+          .map((example) => escapeHtml(example.title || '-'))
+          .join('<br>');
+
+        tooltip.innerHTML = `
+          <span class="tooltip-title">${point.count.toLocaleString('ja-JP')} 本</span>
+          <span class="tooltip-meta">
+            ${escapeHtml(BI_METRICS[xMetric].label)}: ${escapeHtml(BI_METRICS[xMetric].format(point.xMin))} - ${escapeHtml(BI_METRICS[xMetric].format(point.xMax))}<br>
+            ${escapeHtml(BI_METRICS[yMetric].label)}: ${escapeHtml(BI_METRICS[yMetric].format(point.yMin))} - ${escapeHtml(BI_METRICS[yMetric].format(point.yMax))}<br>
+            ${examples}
+          </span>
+        `;
+      } else {
+        const xValue = BI_METRICS[xMetric].format(point.xRaw);
+        const yValue = BI_METRICS[yMetric].format(point.yRaw);
+
+        tooltip.innerHTML = `
+          <span class="tooltip-title">${escapeHtml(point.title || '-')}</span>
+          <span class="tooltip-meta">
+            ${escapeHtml(formatDate(point.publishedAt))} / ${escapeHtml(point.videoType || '-')}<br>
+            ${escapeHtml(BI_METRICS[xMetric].label)}: ${escapeHtml(xValue)}<br>
+            ${escapeHtml(BI_METRICS[yMetric].label)}: ${escapeHtml(yValue)}
+          </span>
+        `;
+      }
+
+      const left = Math.min(
+        panelRect.width - 336,
+        Math.max(12, event.clientX - panelRect.left + 14)
+      );
+      const top = Math.min(
+        panelRect.height - 120,
+        Math.max(12, event.clientY - panelRect.top + 14)
+      );
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+      tooltip.hidden = false;
+    }
+
+    function hideCorrelationTooltip() {
+      $('#correlation-tooltip').hidden = true;
+    }
+
+    async function renderCorrelation() {
+      if (!state.conn) return;
+
+      const xMetric = $('#x-metric').value;
+      const yMetric = $('#y-metric').value;
+      const colorMetric = $('#color-metric').value;
+
+      if (!BI_METRICS[xMetric] || !BI_METRICS[yMetric]) {
+        throw new Error('Invalid metric selection.');
+      }
+
+      const rows = arrowRows(await state.conn.query(`
+        SELECT
+          video_id,
+          title,
+          published_at,
+          video_type,
+          ${colorMetric} AS color_value,
+          ${xMetric} AS x_value,
+          ${yMetric} AS y_value
+        FROM videos_bi
+        ${getBiWhereSql(xMetric, yMetric)}
+        ORDER BY view_count_num DESC NULLS LAST
+      `));
+      const points = rows
+        .map((row) => ({
+          videoId: row.video_id,
+          videoUrl: row.video_id ? `https://www.youtube.com/watch?v=${row.video_id}` : '',
+          title: row.title,
+          publishedAt: row.published_at,
+          videoType: row.video_type,
+          colorValue: row.color_value,
+          xRaw: row.x_value,
+          yRaw: row.y_value,
+          xPlot: getMetricValue(row.x_value),
+          yPlot: getMetricValue(row.y_value)
+        }))
+        .filter((point) => point.xPlot !== null && point.yPlot !== null);
+      const visiblePoints = points;
+      const correlation = calculatePearson(visiblePoints);
+
+      $('#corr-n').textContent = visiblePoints.length.toLocaleString('ja-JP');
+      $('#corr-r').textContent = correlation === null
+        ? '-'
+        : correlation.toLocaleString('ja-JP', { maximumFractionDigits: 3 });
+      $('#bi-summary').textContent = `${BI_METRICS[xMetric].label} x ${BI_METRICS[yMetric].label} | n=${visiblePoints.length.toLocaleString('ja-JP')}`;
+
+      if ($('#plot-mode').value === 'density') {
+        drawDensity(visiblePoints, xMetric, yMetric);
+      } else {
+        drawScatter(visiblePoints, xMetric, yMetric);
+      }
+      renderTopVideos(visiblePoints, xMetric, yMetric);
+    }

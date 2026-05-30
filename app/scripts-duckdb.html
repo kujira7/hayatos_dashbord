@@ -1,0 +1,26 @@
+    async function createDuckDB() {
+      const bundles = duckdb.getJsDelivrBundles();
+      const bundle = await duckdb.selectBundle(bundles);
+      const workerUrl = URL.createObjectURL(
+        new Blob(
+          [`importScripts("${bundle.mainWorker}");`],
+          { type: 'text/javascript' }
+        )
+      );
+      const worker = new Worker(workerUrl);
+      const logger = new duckdb.ConsoleLogger();
+      const db = new duckdb.AsyncDuckDB(logger, worker);
+
+      await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+      URL.revokeObjectURL(workerUrl);
+
+      return db;
+    }
+
+    function arrowRows(result) {
+      return result.toArray().map((row) => row.toJSON());
+    }
+
+    function sqlString(value) {
+      return String(value).replace(/'/g, "''");
+    }
