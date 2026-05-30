@@ -284,18 +284,6 @@
     </main>
   </div>
 
-  <script type="module">
-    import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
-
-    <?!= include('scripts-core'); ?>
-    <?!= include('scripts-cache'); ?>
-    <?!= include('scripts-duckdb'); ?>
-    <?!= include('scripts-format'); ?>
-    <?!= include('scripts-list'); ?>
-    <?!= include('scripts-bi'); ?>
-    <?!= include('scripts-chart'); ?>
-    <?!= include('scripts-data'); ?>
-    <?!= include('scripts-events'); ?>
-  </script>
+  <?!= include('scripts'); ?>
 </body>
 </html>
