@@ -40,6 +40,28 @@ function getDatasetCsv() {
   };
 }
 
+function getDatasetManifest() {
+  const totalStart = Date.now();
+  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
+  const metadata = readMetadata();
+
+  return {
+    csvFile: {
+      id: file.getId(),
+      name: file.getName(),
+      lastUpdated: file.getLastUpdated().toISOString()
+    },
+    metadata,
+    rowCountIncludingHeader: getRowCountIncludingHeader(metadata, ''),
+    dataRowCount: getDataRowCount(metadata, ''),
+    columnCount: VIDEO_COLUMNS.length,
+    csvBytes: file.getSize(),
+    serverTimingsMs: {
+      total: Date.now() - totalStart
+    }
+  };
+}
+
 function readMetadata() {
   const file = getOnlyDriveFileByNameOrNull(DATA_FOLDER_PATH, METADATA_JSON_FILE_NAME);
 
@@ -77,6 +99,7 @@ function normalizeMetadata(metadata) {
   const keys = [
     'last_refresh_started_at',
     'last_refresh_finished_at',
+    'last_success_finished_at',
     'last_refresh_status',
     'last_refresh_trigger_type',
     'last_refresh_error',
@@ -99,6 +122,7 @@ function createDefaultMetadata() {
   return normalizeMetadata({
     last_refresh_started_at: '',
     last_refresh_finished_at: '',
+    last_success_finished_at: '',
     last_refresh_status: '',
     last_refresh_trigger_type: '',
     last_refresh_error: '',

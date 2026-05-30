@@ -42,6 +42,7 @@ function refreshDataset(options) {
       ...metadata,
       last_refresh_started_at: startedAt.toISOString(),
       last_refresh_finished_at: finishedAt.toISOString(),
+      last_success_finished_at: finishedAt.toISOString(),
       last_refresh_status: 'success',
       last_refresh_trigger_type: triggerType,
       last_refresh_error: '',

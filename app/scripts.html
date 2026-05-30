@@ -2,6 +2,10 @@
     import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
 
     const CSV_PATH = 'videos.csv';
+    const CACHE_DB_NAME = 'hayato-live-dashboard';
+    const CACHE_STORE_NAME = 'datasets';
+    const CACHE_KEY = 'videos';
+    const CACHE_SCHEMA_VERSION = 1;
     const $ = (selector) => document.querySelector(selector);
     const SORT_COLUMNS = {
       title: { expression: 'lower(title)', defaultDirection: 'asc' },
@@ -114,6 +118,99 @@
       });
     }
 
+    function openDatasetCache() {
+      return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) {
+          reject(new Error('IndexedDB is not available.'));
+          return;
+        }
+
+        const request = indexedDB.open(CACHE_DB_NAME, 1);
+
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore(CACHE_STORE_NAME, { keyPath: 'key' });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function withDatasetCache(mode, operation) {
+      const db = await openDatasetCache();
+
+      try {
+        return await new Promise((resolve, reject) => {
+          const transaction = db.transaction(CACHE_STORE_NAME, mode);
+          const store = transaction.objectStore(CACHE_STORE_NAME);
+          const request = operation(store);
+
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      } finally {
+        db.close();
+      }
+    }
+
+    async function readCachedDataset() {
+      try {
+        const record = await withDatasetCache('readonly', (store) => store.get(CACHE_KEY));
+
+        if (!record || record.cacheSchemaVersion !== CACHE_SCHEMA_VERSION || !record.csv) {
+          return null;
+        }
+
+        return record;
+      } catch (error) {
+        console.warn('Dataset cache read failed.', error);
+        return null;
+      }
+    }
+
+    async function writeCachedDataset(dataset) {
+      try {
+        await withDatasetCache('readwrite', (store) => store.put({
+          key: CACHE_KEY,
+          cacheSchemaVersion: CACHE_SCHEMA_VERSION,
+          csvFile: dataset.csvFile,
+          metadata: dataset.metadata,
+          rowCountIncludingHeader: dataset.rowCountIncludingHeader,
+          dataRowCount: dataset.dataRowCount,
+          columnCount: dataset.columnCount,
+          csvBytes: dataset.csvBytes,
+          csv: dataset.csv,
+          cachedAt: new Date().toISOString()
+        }));
+      } catch (error) {
+        console.warn('Dataset cache write failed.', error);
+      }
+    }
+
+    function cachedRecordToDataset(record) {
+      return {
+        csvFile: record.csvFile,
+        metadata: record.metadata,
+        rowCountIncludingHeader: record.rowCountIncludingHeader,
+        dataRowCount: record.dataRowCount,
+        columnCount: record.columnCount,
+        csvBytes: record.csvBytes,
+        csv: record.csv,
+        cache: {
+          cachedAt: record.cachedAt
+        }
+      };
+    }
+
+    function isCachedDatasetFresh(cacheRecord, manifest) {
+      return Boolean(
+        cacheRecord &&
+        manifest &&
+        cacheRecord.csvFile?.id === manifest.csvFile?.id &&
+        cacheRecord.csvFile?.lastUpdated === manifest.csvFile?.lastUpdated &&
+        Number(cacheRecord.csvBytes) === Number(manifest.csvBytes)
+      );
+    }
+
     function formatMs(value) {
       if (!Number.isFinite(value)) {
         return '-';
@@ -146,11 +243,12 @@
     }
 
     function formatLoadTimingStatus(timings, dataset) {
+      const gasTotal = timings.getDatasetCsv ?? timings.getDatasetManifest;
       const serverTotal = dataset?.serverTimingsMs?.total;
 
       return [
         `total ${formatMs(timings.total)}`,
-        `GAS ${formatMs(timings.getDatasetCsv)}`,
+        `GAS ${formatMs(gasTotal)}`,
         `server ${formatMs(serverTotal)}`,
         `DuckDB ${formatMs(timings.createDuckDB)}`
       ].join(' / ');
@@ -250,6 +348,48 @@
       const month = String(date.getMonth() + 1).padStart(2, '0');
       const day = String(date.getDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
+    }
+
+    function formatDateTime(value) {
+      if (!value) return '不明';
+      const date = value instanceof Date ? value : new Date(value);
+
+      if (Number.isNaN(date.getTime())) {
+        return '不明';
+      }
+
+      const parts = Object.fromEntries(
+        new Intl.DateTimeFormat('ja-JP', {
+          timeZone: 'Asia/Tokyo',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false,
+          hourCycle: 'h23'
+        }).formatToParts(date).map((part) => [part.type, part.value])
+      );
+
+      return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
+    }
+
+    function getYoutubeFinishedAt() {
+      const metadata = state.dataset?.metadata || {};
+
+      if (metadata.last_success_finished_at) {
+        return metadata.last_success_finished_at;
+      }
+
+      if (metadata.last_refresh_status === 'success') {
+        return metadata.last_refresh_finished_at;
+      }
+
+      return '';
+    }
+
+    function formatYoutubeFinishedAtSummary() {
+      return `YouTubeからのデータ取得日時 ${formatDateTime(getYoutubeFinishedAt())}`;
     }
 
     function formatDuration(value) {
@@ -377,7 +517,7 @@
         item.classList.toggle('active', item.dataset.filter === state.filterValue);
       });
       $('#page-title').textContent = filterLabel;
-      $('#summary').textContent = `全期間 | ${filterLabel} | 全 ${filtered} 本`;
+      $('#summary').textContent = `全期間 | ${filterLabel} | 全 ${filtered} 本 | ${formatYoutubeFinishedAtSummary()}`;
     }
 
     function renderPager() {
@@ -1272,6 +1412,7 @@
     async function loadSpreadsheet() {
       const timings = {};
       const totalStart = performance.now();
+      let renderedFromCache = false;
 
       $('#load-button').disabled = true;
       $('#refresh-button').disabled = true;
@@ -1286,7 +1427,33 @@
           state.conn = null;
         }
 
-        setStatus('CSV読み込みとDuckDB-Wasm初期化中...');
+        const cachedRecord = await measureTiming(timings, 'readCache', () => readCachedDataset());
+
+        if (cachedRecord) {
+          setStatus('キャッシュから表示中。最新確認中...');
+          const cachedDataset = cachedRecordToDataset(cachedRecord);
+          const db = state.db || await measureTiming(timings, 'createDuckDB', () => createDuckDB());
+
+          state.db = db;
+          await loadDatasetIntoDuckDB(cachedDataset, timings);
+          timings.total = performance.now() - totalStart;
+          renderedFromCache = true;
+          logLoadTimings(timings, cachedDataset);
+          setStatus(`キャッシュから表示中。${formatLoadTimingStatus(timings, cachedDataset)}`);
+        }
+
+        setStatus(renderedFromCache ? '最新確認中...' : 'CSV読み込みとDuckDB-Wasm初期化中...');
+        const manifest = await measureTiming(timings, 'getDatasetManifest', () => gasRun('getDatasetManifest'));
+
+        if (renderedFromCache && isCachedDatasetFresh(cachedRecord, manifest)) {
+          timings.total = performance.now() - totalStart;
+          state.dataset.serverTimingsMs = manifest.serverTimingsMs;
+          logLoadTimings(timings, state.dataset);
+          setStatus(`最新確認済み。${formatLoadTimingStatus(timings, state.dataset)}`);
+          return;
+        }
+
+        setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...');
         const datasetPromise = measureTiming(timings, 'getDatasetCsv', () => gasRun('getDatasetCsv'));
         const dbPromise = state.db
           ? Promise.resolve(state.db)
@@ -1296,29 +1463,8 @@
         state.db = db;
         timings.createDuckDB = timings.createDuckDB || 0;
 
-        setStatus('CSVをDuckDB-Wasmに登録中...');
-        await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
-
-        setStatus('DuckDB connectionを作成中...');
-        state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
-
-        setStatus('read_csv_autoでviewを作成中...');
-        await measureTiming(timings, 'createVideosView', () => state.conn.query(`
-          CREATE OR REPLACE VIEW videos AS
-          SELECT *
-          FROM read_csv_auto('${CSV_PATH}', header = true)
-        `));
-        await measureTiming(timings, 'createBiView', () => createBiView());
-
-        state.dataset = dataset;
-
-        await measureTiming(timings, 'refreshCounts', () => refreshCounts());
-        await measureTiming(timings, 'refreshFilterOptions', () => refreshFilterOptions());
-        $('#live-filter').value = state.filterValue;
-        renderCorrelationTemplates();
-        await measureTiming(timings, 'refreshBiFilterOptions', () => refreshBiFilterOptions());
-        await measureTiming(timings, 'renderPage', () => renderPage(1));
-        await measureTiming(timings, 'renderCorrelation', () => renderCorrelation());
+        await loadDatasetIntoDuckDB(dataset, timings);
+        await measureTiming(timings, 'writeCache', () => writeCachedDataset(dataset));
 
         timings.total = performance.now() - totalStart;
         logLoadTimings(timings, dataset);
@@ -1333,6 +1479,37 @@
         $('#live-filter').disabled = false;
         $('#page-size-select').disabled = false;
       }
+    }
+
+    async function loadDatasetIntoDuckDB(dataset, timings) {
+      if (state.conn) {
+        await state.conn.close();
+        state.conn = null;
+      }
+
+      setStatus('CSVをDuckDB-Wasmに登録中...');
+      await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
+
+      setStatus('DuckDB connectionを作成中...');
+      state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
+
+      setStatus('read_csv_autoでviewを作成中...');
+      await measureTiming(timings, 'createVideosView', () => state.conn.query(`
+        CREATE OR REPLACE VIEW videos AS
+        SELECT *
+        FROM read_csv_auto('${CSV_PATH}', header = true)
+      `));
+      await measureTiming(timings, 'createBiView', () => createBiView());
+
+      state.dataset = dataset;
+
+      await measureTiming(timings, 'refreshCounts', () => refreshCounts());
+      await measureTiming(timings, 'refreshFilterOptions', () => refreshFilterOptions());
+      $('#live-filter').value = state.filterValue;
+      renderCorrelationTemplates();
+      await measureTiming(timings, 'refreshBiFilterOptions', () => refreshBiFilterOptions());
+      await measureTiming(timings, 'renderPage', () => renderPage(1));
+      await measureTiming(timings, 'renderCorrelation', () => renderCorrelation());
     }
 
     async function refreshFromYouTube() {
