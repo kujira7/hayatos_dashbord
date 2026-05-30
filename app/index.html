@@ -63,13 +63,24 @@
         <div id="status" class="status">初期化中...</div>
 
         <div class="toolbar">
-          <select id="live-filter" class="live-filter" aria-label="動画種別">
-            <option value="category:all">ALL</option>
-          </select>
+          <div class="toolbar-controls">
+            <select id="live-filter" class="live-filter" aria-label="動画種別">
+              <option value="category:all">ALL</option>
+            </select>
+            <label class="page-size-control">
+              <span>表示件数</span>
+              <select id="page-size-select" aria-label="表示件数">
+                <option value="50" selected>50</option>
+                <option value="100">100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+              </select>
+            </label>
+          </div>
           <div class="pager">
-            <button id="prev-button" type="button" disabled>前へ</button>
-            <span id="page-info" class="page-info">-</span>
-            <button id="next-button" type="button" disabled>次へ</button>
+            <button type="button" data-page-action="prev" disabled>前へ</button>
+            <span class="page-info">-</span>
+            <button type="button" data-page-action="next" disabled>次へ</button>
           </div>
         </div>
 
@@ -77,18 +88,25 @@
           <table>
             <thead>
               <tr>
-                <th>動画</th>
-                <th>公開日</th>
-                <th class="highlight">種別</th>
-                <th>公開状態</th>
-                <th class="right">閲覧数</th>
-                <th class="right">Like数</th>
-                <th class="right">コメント数</th>
-                <th class="highlight right">最大同接(API)</th>
+                <th class="sortable" data-sort-key="title" tabindex="0">動画</th>
+                <th class="sortable" data-sort-key="published_at" tabindex="0">公開日</th>
+                <th class="highlight sortable" data-sort-key="video_type" tabindex="0">種別</th>
+                <th class="sortable" data-sort-key="visibility" tabindex="0">公開状態</th>
+                <th class="right sortable" data-sort-key="view_count" tabindex="0">閲覧数</th>
+                <th class="right sortable" data-sort-key="like_count" tabindex="0">Like数</th>
+                <th class="right sortable" data-sort-key="comment_count" tabindex="0">コメント数</th>
+                <th class="highlight right sortable" data-sort-key="peak_concurrent_viewers" tabindex="0">最大同接(API)</th>
               </tr>
             </thead>
             <tbody id="tbody"></tbody>
           </table>
+        </div>
+        <div class="table-footer">
+          <div class="pager">
+            <button type="button" data-page-action="prev" disabled>前へ</button>
+            <span class="page-info">-</span>
+            <button type="button" data-page-action="next" disabled>次へ</button>
+          </div>
         </div>
       </section>
 

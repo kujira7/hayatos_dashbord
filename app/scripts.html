@@ -2,8 +2,24 @@
     import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
 
     const CSV_PATH = 'videos.csv';
-    const PAGE_SIZE = 200;
     const $ = (selector) => document.querySelector(selector);
+    const SORT_COLUMNS = {
+      title: { expression: 'lower(title)', defaultDirection: 'asc' },
+      published_at: { expression: "try_cast(published_at AS TIMESTAMP)", defaultDirection: 'desc' },
+      video_type: {
+        expression: `CASE
+          WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
+          WHEN COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60 THEN 'Shorts'
+          ELSE '通常動画'
+        END`,
+        defaultDirection: 'asc'
+      },
+      visibility: { expression: 'visibility', defaultDirection: 'asc' },
+      view_count: { expression: 'try_cast(view_count AS DOUBLE)', defaultDirection: 'desc' },
+      like_count: { expression: 'try_cast(like_count AS DOUBLE)', defaultDirection: 'desc' },
+      comment_count: { expression: 'try_cast(comment_count AS DOUBLE)', defaultDirection: 'desc' },
+      peak_concurrent_viewers: { expression: 'try_cast(peak_concurrent_viewers AS DOUBLE)', defaultDirection: 'desc' }
+    };
     const BI_METRICS = {
       duration_sec_num: { label: '動画の長さ', format: formatDuration },
       view_count_num: { label: '閲覧数', format: formatNumber },
@@ -64,7 +80,10 @@
       },
       currentPage: 1,
       totalPages: 1,
+      pageSize: 50,
       filterValue: 'category:all',
+      sortKey: 'peak_concurrent_viewers',
+      sortDirection: 'desc',
       activeCorrelationTemplate: CORRELATION_TEMPLATES[0].id,
       publishedDateValues: [],
       durationRange: null,
@@ -184,6 +203,16 @@
       }
 
       return "WHERE COALESCE(live_type, '') LIKE '%LIVE%'";
+    }
+
+    function getOrderBySql() {
+      const sortColumn = SORT_COLUMNS[state.sortKey] || SORT_COLUMNS.peak_concurrent_viewers;
+      const direction = state.sortDirection === 'asc' ? 'ASC' : 'DESC';
+      const fallback = state.sortKey === 'published_at'
+        ? 'video_id ASC'
+        : "try_cast(published_at AS TIMESTAMP) DESC NULLS LAST, video_id ASC";
+
+      return `ORDER BY ${sortColumn.expression} ${direction} NULLS LAST, ${fallback}`;
     }
 
     function getFilterLabel() {
@@ -354,15 +383,35 @@
     function renderPager() {
       const start = state.filteredCount === 0
         ? 0
-        : ((state.currentPage - 1) * PAGE_SIZE) + 1;
-      const end = Math.min(state.currentPage * PAGE_SIZE, state.filteredCount);
-
-      $('#page-info').textContent = state.filteredCount === 0
+        : ((state.currentPage - 1) * state.pageSize) + 1;
+      const end = Math.min(state.currentPage * state.pageSize, state.filteredCount);
+      const pageText = state.filteredCount === 0
         ? '0件'
         : `${start.toLocaleString('ja-JP')}-${end.toLocaleString('ja-JP')} / ${state.filteredCount.toLocaleString('ja-JP')}件`;
 
-      $('#prev-button').disabled = state.currentPage <= 1;
-      $('#next-button').disabled = state.currentPage >= state.totalPages;
+      document.querySelectorAll('.page-info').forEach((element) => {
+        element.textContent = pageText;
+      });
+      document.querySelectorAll('[data-page-action="prev"]').forEach((button) => {
+        button.disabled = state.currentPage <= 1;
+      });
+      document.querySelectorAll('[data-page-action="next"]').forEach((button) => {
+        button.disabled = state.currentPage >= state.totalPages;
+      });
+    }
+
+    function renderSortHeaders() {
+      document.querySelectorAll('th[data-sort-key]').forEach((header) => {
+        const active = header.dataset.sortKey === state.sortKey;
+        header.classList.toggle('active-sort', active);
+        header.dataset.sortDirection = active ? state.sortDirection : '';
+      });
+    }
+
+    function setPagerButtonsDisabled(disabled) {
+      document.querySelectorAll('[data-page-action]').forEach((button) => {
+        button.disabled = disabled;
+      });
     }
 
     async function refreshFilterOptions() {
@@ -413,15 +462,16 @@
       `));
 
       state.filteredCount = Number(filteredRows[0].row_count);
-      state.totalPages = Math.max(1, Math.ceil(state.filteredCount / PAGE_SIZE));
+      state.totalPages = Math.max(1, Math.ceil(state.filteredCount / state.pageSize));
       state.currentPage = Math.min(state.currentPage, state.totalPages);
       renderCounts();
       renderPager();
+      renderSortHeaders();
     }
 
     async function renderPage(page) {
       state.currentPage = Math.max(1, Math.min(page, state.totalPages));
-      const offset = (state.currentPage - 1) * PAGE_SIZE;
+      const offset = (state.currentPage - 1) * state.pageSize;
 
       setStatus(`ページ ${state.currentPage.toLocaleString('ja-JP')} を取得中...`);
 
@@ -440,8 +490,8 @@
           peak_concurrent_viewers
         FROM videos
         ${getWhereSql()}
-        ORDER BY peak_concurrent_viewers DESC NULLS LAST, published_at DESC NULLS LAST
-        LIMIT ${PAGE_SIZE}
+        ${getOrderBySql()}
+        LIMIT ${state.pageSize}
         OFFSET ${offset}
       `));
 
@@ -1225,9 +1275,9 @@
 
       $('#load-button').disabled = true;
       $('#refresh-button').disabled = true;
-      $('#prev-button').disabled = true;
-      $('#next-button').disabled = true;
+      setPagerButtonsDisabled(true);
       $('#live-filter').disabled = true;
+      $('#page-size-select').disabled = true;
       $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込み中...</td></tr>';
 
       try {
@@ -1281,15 +1331,16 @@
         $('#load-button').disabled = false;
         $('#refresh-button').disabled = false;
         $('#live-filter').disabled = false;
+        $('#page-size-select').disabled = false;
       }
     }
 
     async function refreshFromYouTube() {
       $('#load-button').disabled = true;
       $('#refresh-button').disabled = true;
-      $('#prev-button').disabled = true;
-      $('#next-button').disabled = true;
+      setPagerButtonsDisabled(true);
       $('#live-filter').disabled = true;
+      $('#page-size-select').disabled = true;
 
       try {
         setStatus('YouTubeから全データ再取得中...');
@@ -1303,6 +1354,7 @@
         $('#load-button').disabled = false;
         $('#refresh-button').disabled = false;
         $('#live-filter').disabled = false;
+        $('#page-size-select').disabled = false;
       }
     }
 
@@ -1341,12 +1393,21 @@
       refreshFromYouTube().catch((error) => handleError(error, false));
     });
 
-    $('#prev-button').addEventListener('click', () => {
-      renderPage(state.currentPage - 1).catch(handleError);
+    document.querySelectorAll('[data-page-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const delta = button.dataset.pageAction === 'prev' ? -1 : 1;
+        renderPage(state.currentPage + delta).catch(handleError);
+      });
     });
 
-    $('#next-button').addEventListener('click', () => {
-      renderPage(state.currentPage + 1).catch(handleError);
+    $('#page-size-select').addEventListener('change', () => {
+      state.pageSize = Number($('#page-size-select').value);
+      state.currentPage = 1;
+      if (!state.conn) return;
+
+      refreshCounts()
+        .then(() => renderPage(1))
+        .catch(handleError);
     });
 
     $('#live-filter').addEventListener('change', () => {
@@ -1356,6 +1417,33 @@
       refreshCounts()
         .then(() => renderPage(1))
         .catch(handleError);
+    });
+
+    document.querySelectorAll('th[data-sort-key]').forEach((header) => {
+      header.addEventListener('click', () => {
+        if (!state.conn) return;
+
+        const key = header.dataset.sortKey;
+        if (!SORT_COLUMNS[key]) return;
+
+        if (state.sortKey === key) {
+          state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.sortKey = key;
+          state.sortDirection = SORT_COLUMNS[key].defaultDirection;
+        }
+
+        state.currentPage = 1;
+        renderSortHeaders();
+        renderPage(1).catch(handleError);
+      });
+
+      header.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          event.currentTarget.click();
+        }
+      });
     });
 
     function selectFilter(value) {

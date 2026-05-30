@@ -215,6 +215,13 @@
       border-radius: 6px 6px 0 0;
     }
 
+    .toolbar-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
     .live-filter {
       min-width: 142px;
       border: 1px solid var(--line);
@@ -223,6 +230,24 @@
       border-radius: 4px;
       padding: 7px 10px;
       font-weight: 700;
+    }
+
+    .page-size-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #bfc7d2;
+      font-size: 13px;
+    }
+
+    .page-size-control select {
+      min-width: 82px;
+      border: 1px solid var(--line);
+      background: #12161b;
+      color: var(--text);
+      border-radius: 4px;
+      padding: 7px 10px;
+      font: inherit;
     }
 
     .pager {
@@ -246,6 +271,17 @@
       background: #15181d;
     }
 
+    .table-footer {
+      display: flex;
+      justify-content: flex-end;
+      border: 1px solid var(--line);
+      border-top: 0;
+      background: var(--panel);
+      padding: 12px 14px;
+      border-radius: 0 0 6px 6px;
+      margin-bottom: 8px;
+    }
+
     table {
       width: 100%;
       min-width: 1240px;
@@ -265,6 +301,35 @@
       font-size: 13px;
       text-align: left;
       white-space: nowrap;
+    }
+
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th.sortable::after {
+      content: "↕";
+      display: inline-block;
+      margin-left: 6px;
+      color: #596372;
+      font-size: 11px;
+    }
+
+    th.sortable.active-sort {
+      color: #d9ecff;
+    }
+
+    th.sortable.active-sort::after {
+      color: var(--blue);
+    }
+
+    th.sortable.active-sort[data-sort-direction="asc"]::after {
+      content: "↑";
+    }
+
+    th.sortable.active-sort[data-sort-direction="desc"]::after {
+      content: "↓";
     }
 
     th.highlight {
