@@ -7,86 +7,57 @@
     const BI_METRICS = {
       duration_sec_num: { label: '動画の長さ', format: formatDuration },
       view_count_num: { label: '閲覧数', format: formatNumber },
-      views_per_day: { label: '再生/日', format: formatDecimal },
       like_rate: { label: 'Like率', format: formatPercent },
       comment_rate: { label: 'コメント率', format: formatPercent },
       engagement_rate: { label: '反応率', format: formatPercent },
-      days_since_published: { label: '公開からの日数', format: formatNumber },
       published_hour_num: { label: '公開時刻', format: formatHour },
       peak_concurrent_viewers_num: { label: '最大同接(API)', format: formatNumber }
     };
     const CORRELATION_TEMPLATES = [
       {
-        id: 'duration_views_per_day',
+        id: 'duration_views',
         title: '長い動画は伸びる？',
-        meta: 'X: 動画の長さ / Y: 再生/日',
+        meta: 'X: 動画の長さ / Y: 閲覧数',
         x: 'duration_sec_num',
-        y: 'views_per_day',
-        color: 'video_type',
-        filter: 'category:all',
-        xLog: false,
-        yLog: true,
-        trim: true
-      },
-      {
-        id: 'engagement_views_per_day',
-        title: '反応率が高い動画は伸びる？',
-        meta: 'X: 反応率 / Y: 再生/日',
-        x: 'engagement_rate',
-        y: 'views_per_day',
-        color: 'video_type',
-        filter: 'category:all',
-        xLog: false,
-        yLog: true,
-        trim: true
-      },
-      {
-        id: 'like_views_per_day',
-        title: 'Like率と伸びの関係',
-        meta: 'X: Like率 / Y: 再生/日',
-        x: 'like_rate',
-        y: 'views_per_day',
-        color: 'video_type',
-        filter: 'category:all',
-        xLog: false,
-        yLog: true,
-        trim: true
-      },
-      {
-        id: 'comment_views_per_day',
-        title: 'コメントが多い動画は伸びる？',
-        meta: 'X: コメント率 / Y: 再生/日',
-        x: 'comment_rate',
-        y: 'views_per_day',
-        color: 'video_type',
-        filter: 'category:all',
-        xLog: false,
-        yLog: true,
-        trim: true
-      },
-      {
-        id: 'hour_views_per_day',
-        title: '公開時間で差が出る？',
-        meta: 'X: 公開時刻 / Y: 再生/日',
-        x: 'published_hour_num',
-        y: 'views_per_day',
-        color: 'video_type',
-        filter: 'category:all',
-        xLog: false,
-        yLog: true,
-        trim: true
-      },
-      {
-        id: 'live_peak_views',
-        title: 'LIVEはアーカイブでも強い？',
-        meta: 'X: 最大同接 / Y: 閲覧数',
-        x: 'peak_concurrent_viewers_num',
         y: 'view_count_num',
-        color: 'published_month',
-        filter: 'category:live',
-        xLog: true,
-        yLog: true,
-        trim: true
+        color: 'video_type',
+        filter: 'category:all'
+      },
+      {
+        id: 'engagement_views',
+        title: '反応率が高い動画は伸びる？',
+        meta: 'X: 反応率 / Y: 閲覧数',
+        x: 'engagement_rate',
+        y: 'view_count_num',
+        color: 'video_type',
+        filter: 'category:all'
+      },
+      {
+        id: 'like_views',
+        title: 'Like率と伸びの関係',
+        meta: 'X: Like率 / Y: 閲覧数',
+        x: 'like_rate',
+        y: 'view_count_num',
+        color: 'video_type',
+        filter: 'category:all'
+      },
+      {
+        id: 'comment_views',
+        title: 'コメントが多い動画は伸びる？',
+        meta: 'X: コメント率 / Y: 閲覧数',
+        x: 'comment_rate',
+        y: 'view_count_num',
+        color: 'video_type',
+        filter: 'category:all'
+      },
+      {
+        id: 'hour_views',
+        title: '公開時間で差が出る？',
+        meta: 'X: 公開時刻 / Y: 閲覧数',
+        x: 'published_hour_num',
+        y: 'view_count_num',
+        color: 'video_type',
+        filter: 'category:all'
       }
     ];
     const state = {
@@ -105,6 +76,8 @@
       totalPages: 1,
       filterValue: 'category:all',
       activeCorrelationTemplate: CORRELATION_TEMPLATES[0].id,
+      publishedDateValues: [],
+      durationRange: null,
       correlationPoints: []
     };
 
@@ -238,6 +211,39 @@
       }
 
       return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function parseDurationInput(value) {
+      const text = String(value || '').trim();
+      if (!text || text === '-') return null;
+
+      if (/^\d+(\.\d+)?$/.test(text)) {
+        return Number(text);
+      }
+
+      const parts = text.split(':').map((part) => part.trim());
+      if (parts.length < 2 || parts.length > 3 || parts.some((part) => !/^\d+$/.test(part))) {
+        return null;
+      }
+
+      const numbers = parts.map(Number);
+      if (numbers.some((number) => !Number.isFinite(number))) return null;
+
+      if (numbers.length === 2) {
+        return (numbers[0] * 60) + numbers[1];
+      }
+
+      return (numbers[0] * 3600) + (numbers[1] * 60) + numbers[2];
+    }
+
+    function parsePublishedDateInput(value) {
+      const text = String(value || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
+
+      const date = new Date(`${text}T00:00:00`);
+      if (Number.isNaN(date.getTime())) return null;
+
+      return text;
     }
 
     function normalizeVisibility(value) {
@@ -430,8 +436,9 @@
             try_cast(comment_count AS DOUBLE) AS comment_count_num,
             try_cast(duration_sec AS DOUBLE) AS duration_sec_num,
             try_cast(peak_concurrent_viewers AS DOUBLE) AS peak_concurrent_viewers_num,
-            try_cast(substr(published_at, 1, 10) AS DATE) AS published_date,
-            try_cast(substr(published_at, 12, 2) AS INTEGER) AS published_hour_num
+            cast(published_at AS VARCHAR) AS published_at_text,
+            try_cast(substr(cast(published_at AS VARCHAR), 1, 10) AS DATE) AS published_date,
+            try_cast(substr(cast(published_at AS VARCHAR), 12, 2) AS INTEGER) AS published_hour_num
           FROM videos
         ),
         enriched AS (
@@ -453,13 +460,12 @@
               WHEN COALESCE(duration_sec_num, 0) < 2400 THEN '通常 20-40m'
               ELSE '通常 40m+'
             END AS duration_bucket,
-            substr(published_at, 1, 7) AS published_month,
-            greatest(1, COALESCE(date_diff('day', published_date, current_date), 1)) AS days_since_published
+            substr(published_at_text, 1, 7) AS published_month,
+            substr(published_at_text, 1, 4) AS published_year
           FROM base
         )
         SELECT
           *,
-          view_count_num / days_since_published AS views_per_day,
           like_count_num / NULLIF(view_count_num, 0) AS like_rate,
           comment_count_num / NULLIF(view_count_num, 0) AS comment_rate,
           (like_count_num + comment_count_num) / NULLIF(view_count_num, 0) AS engagement_rate
@@ -476,6 +482,234 @@
       $('#y-metric').innerHTML = metricOptions;
       applyCorrelationTemplate(CORRELATION_TEMPLATES[0], false);
       renderCorrelationTemplates();
+    }
+
+    async function refreshBiFilterOptions() {
+      const durationRows = arrowRows(await state.conn.query(`
+        SELECT
+          floor(min(duration_sec_num))::VARCHAR AS min_duration,
+          ceil(max(duration_sec_num))::VARCHAR AS max_duration
+        FROM videos_bi
+        WHERE duration_sec_num IS NOT NULL
+      `));
+      const dateRows = arrowRows(await state.conn.query(`
+        SELECT cast(published_date AS VARCHAR) AS published_date_text
+        FROM videos_bi
+        WHERE published_date IS NOT NULL
+        GROUP BY published_date
+        ORDER BY published_date
+      `));
+      const yearRows = arrowRows(await state.conn.query(`
+        SELECT published_year, count(*)::VARCHAR AS count
+        FROM videos_bi
+        WHERE published_year IS NOT NULL
+        GROUP BY published_year
+        ORDER BY published_year DESC
+      `));
+      const hourRows = arrowRows(await state.conn.query(`
+        SELECT published_hour_num, count(*)::VARCHAR AS count
+        FROM videos_bi
+        WHERE published_hour_num IS NOT NULL
+        GROUP BY published_hour_num
+        ORDER BY published_hour_num
+      `));
+
+      state.publishedDateValues = dateRows.map((row) => row.published_date_text).filter(Boolean);
+      state.durationRange = durationRows.length === 0
+        ? null
+        : {
+          min: Number(durationRows[0].min_duration || 0),
+          max: Number(durationRows[0].max_duration || 0)
+        };
+
+      resetDurationFilter();
+      resetPublishedDateFilter();
+
+      $('#published-year-filter').innerHTML = [
+        '<option value="">ALL</option>',
+        ...yearRows.map((row) => {
+          const value = escapeHtml(row.published_year || '');
+          const label = `${row.published_year || '-'} (${Number(row.count).toLocaleString('ja-JP')})`;
+          return `<option value="${value}">${escapeHtml(label)}</option>`;
+        })
+      ].join('');
+      $('#published-hour-filter').innerHTML = [
+        '<option value="">ALL</option>',
+        ...hourRows.map((row) => {
+          const value = escapeHtml(row.published_hour_num ?? '');
+          const label = `${formatHour(row.published_hour_num)} (${Number(row.count).toLocaleString('ja-JP')})`;
+          return `<option value="${value}">${escapeHtml(label)}</option>`;
+        })
+      ].join('');
+    }
+
+    function resetDurationFilter() {
+      const start = $('#duration-start');
+      const end = $('#duration-end');
+
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) {
+        start.disabled = true;
+        end.disabled = true;
+        $('#duration-start-label').value = '-';
+        $('#duration-end-label').value = '-';
+        updateRangeFill('duration', 0, 0, 0, 0);
+        return;
+      }
+
+      [start, end].forEach((slider) => {
+        slider.min = String(state.durationRange.min);
+        slider.max = String(state.durationRange.max);
+        slider.step = '60';
+        slider.disabled = false;
+      });
+      start.value = String(state.durationRange.min);
+      end.value = String(state.durationRange.max);
+      updateDurationSliderLabels();
+    }
+
+    function getDurationRange() {
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) return null;
+
+      const start = Math.min(Number($('#duration-start').value), Number($('#duration-end').value));
+      const end = Math.max(Number($('#duration-start').value), Number($('#duration-end').value));
+      return { start, end };
+    }
+
+    function updateDurationSliderLabels() {
+      const range = getDurationRange();
+
+      if (!range) {
+        $('#duration-start-label').value = '-';
+        $('#duration-end-label').value = '-';
+        updateRangeFill('duration', 0, 0, 0, 0);
+        return;
+      }
+
+      $('#duration-start-label').value = formatDuration(range.start);
+      $('#duration-end-label').value = formatDuration(range.end);
+      updateRangeFill('duration', state.durationRange.min, state.durationRange.max, range.start, range.end);
+    }
+
+    function resetPublishedDateFilter() {
+      const start = $('#published-date-start');
+      const end = $('#published-date-end');
+      const maxIndex = state.publishedDateValues.length - 1;
+
+      if (maxIndex <= 0) {
+        start.disabled = true;
+        end.disabled = true;
+        $('#published-date-start-label').value = state.publishedDateValues[0] || '-';
+        $('#published-date-end-label').value = state.publishedDateValues[0] || '-';
+        updateRangeFill('published-date', 0, 0, 0, 0);
+        return;
+      }
+
+      [start, end].forEach((slider) => {
+        slider.min = '0';
+        slider.max = String(maxIndex);
+        slider.step = '1';
+        slider.disabled = false;
+      });
+      start.value = '0';
+      end.value = String(maxIndex);
+      updatePublishedDateSliderLabels();
+    }
+
+    function getPublishedDateRange() {
+      if (state.publishedDateValues.length === 0) return null;
+
+      const startIndex = Math.min(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const endIndex = Math.max(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      return {
+        start: state.publishedDateValues[startIndex],
+        end: state.publishedDateValues[endIndex]
+      };
+    }
+
+    function updatePublishedDateSliderLabels() {
+      const range = getPublishedDateRange();
+      const startIndex = Math.min(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const endIndex = Math.max(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const maxIndex = Math.max(0, state.publishedDateValues.length - 1);
+
+      $('#published-date-start-label').value = range?.start || '-';
+      $('#published-date-end-label').value = range?.end || '-';
+      updateRangeFill('published-date', 0, maxIndex, startIndex, endIndex);
+    }
+
+    function setDurationFromInput(targetId) {
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) return;
+
+      const input = $(`#${targetId}-label`);
+      const slider = $(`#${targetId}`);
+      const parsed = parseDurationInput(input.value);
+
+      if (parsed === null) {
+        updateDurationSliderLabels();
+        return;
+      }
+
+      const value = Math.max(state.durationRange.min, Math.min(state.durationRange.max, parsed));
+      slider.value = String(value);
+      updateDurationSliderLabels();
+      renderCorrelation().catch(handleError);
+    }
+
+    function findNearestPublishedDateIndex(dateText) {
+      if (state.publishedDateValues.length === 0) return -1;
+
+      let bestIndex = 0;
+      let bestDistance = Infinity;
+      const targetTime = new Date(`${dateText}T00:00:00`).getTime();
+
+      state.publishedDateValues.forEach((candidate, index) => {
+        const distance = Math.abs(new Date(`${candidate}T00:00:00`).getTime() - targetTime);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+
+      return bestIndex;
+    }
+
+    function setPublishedDateFromInput(targetId) {
+      const input = $(`#${targetId}-label`);
+      const slider = $(`#${targetId}`);
+      const parsed = parsePublishedDateInput(input.value);
+
+      if (parsed === null) {
+        updatePublishedDateSliderLabels();
+        return;
+      }
+
+      const index = findNearestPublishedDateIndex(parsed);
+      if (index < 0) {
+        updatePublishedDateSliderLabels();
+        return;
+      }
+
+      slider.value = String(index);
+      updatePublishedDateSliderLabels();
+      renderCorrelation().catch(handleError);
+    }
+
+    function updateRangeFill(prefix, min, max, start, end) {
+      const fill = $(`#${prefix}-range-fill`);
+      const span = max - min;
+
+      if (!fill || span <= 0) {
+        if (fill) {
+          fill.style.left = '0%';
+          fill.style.right = '0%';
+        }
+        return;
+      }
+
+      const left = ((start - min) / span) * 100;
+      const right = 100 - (((end - min) / span) * 100);
+      fill.style.left = `${Math.max(0, Math.min(100, left))}%`;
+      fill.style.right = `${Math.max(0, Math.min(100, right))}%`;
     }
 
     function renderCorrelationTemplates() {
@@ -497,9 +731,6 @@
       $('#y-metric').value = template.y;
       $('#color-metric').value = template.color;
       $('#bi-filter').value = template.filter;
-      $('#x-log').checked = template.xLog;
-      $('#y-log').checked = template.yLog;
-      $('#trim-outliers').checked = template.trim;
       renderCorrelationTemplates();
 
       if (shouldRender && state.conn) {
@@ -513,6 +744,10 @@
         `${yMetric} IS NOT NULL`
       ];
       const filterValue = $('#bi-filter').value;
+      const durationRange = getDurationRange();
+      const publishedDateRange = getPublishedDateRange();
+      const publishedYear = $('#published-year-filter').value;
+      const publishedHour = $('#published-hour-filter').value;
       const keyword = $('#bi-keyword').value.trim();
 
       if (filterValue === 'category:live') {
@@ -523,50 +758,35 @@
         conditions.push("video_type = 'Shorts'");
       }
 
-      if ($('#x-log').checked) {
-        conditions.push(`${xMetric} > 0`);
-      }
-
-      if ($('#y-log').checked) {
-        conditions.push(`${yMetric} > 0`);
-      }
-
       if (keyword) {
         conditions.push(`title ILIKE '%${sqlString(keyword)}%'`);
+      }
+
+      if (durationRange) {
+        conditions.push(`duration_sec_num BETWEEN ${durationRange.start} AND ${durationRange.end}`);
+      }
+
+      if (publishedDateRange) {
+        conditions.push(`published_date BETWEEN DATE '${sqlString(publishedDateRange.start)}' AND DATE '${sqlString(publishedDateRange.end)}'`);
+      }
+
+      if (publishedYear) {
+        conditions.push(`published_year = '${sqlString(publishedYear)}'`);
+      }
+
+      if (publishedHour) {
+        conditions.push(`published_hour_num = ${Number(publishedHour)}`);
       }
 
       return `WHERE ${conditions.join(' AND ')}`;
     }
 
-    function getMetricValue(value, useLog) {
+    function getMetricValue(value) {
       const number = Number(value);
 
       if (!Number.isFinite(number)) return null;
-      if (useLog && number <= 0) return null;
 
-      return useLog ? Math.log10(number) : number;
-    }
-
-    function trimPointOutliers(points) {
-      if (points.length < 40 || !$('#trim-outliers').checked) {
-        return points;
-      }
-
-      const xs = points.map((point) => point.xPlot).sort((a, b) => a - b);
-      const ys = points.map((point) => point.yPlot).sort((a, b) => a - b);
-      const lowIndex = Math.floor(points.length * 0.01);
-      const highIndex = Math.ceil(points.length * 0.99) - 1;
-      const minX = xs[lowIndex];
-      const maxX = xs[highIndex];
-      const minY = ys[lowIndex];
-      const maxY = ys[highIndex];
-
-      return points.filter((point) => (
-        point.xPlot >= minX &&
-        point.xPlot <= maxX &&
-        point.yPlot >= minY &&
-        point.yPlot <= maxY
-      ));
+      return number;
     }
 
     function calculatePearson(points) {
@@ -588,6 +808,60 @@
 
       const denominator = Math.sqrt(sumX * sumY);
       return denominator === 0 ? null : numerator / denominator;
+    }
+
+    function formatAxisTick(value, metric) {
+      if (metric === 'duration_sec_num') return formatDuration(value);
+      if (metric === 'like_rate' || metric === 'comment_rate' || metric === 'engagement_rate') return formatPercent(value);
+      if (metric === 'published_hour_num') return formatHour(value);
+
+      return formatCompactNumber(value);
+    }
+
+    function formatCompactNumber(value) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) return '-';
+      if (Math.abs(number) >= 1000000) return `${(number / 1000000).toLocaleString('ja-JP', { maximumFractionDigits: 1 })}M`;
+      if (Math.abs(number) >= 1000) return `${(number / 1000).toLocaleString('ja-JP', { maximumFractionDigits: 1 })}K`;
+      if (Math.abs(number) >= 10) return number.toLocaleString('ja-JP', { maximumFractionDigits: 0 });
+      return number.toLocaleString('ja-JP', { maximumFractionDigits: 2 });
+    }
+
+    function drawAxisTicks(ctx, minX, maxX, minY, maxY, xToCanvas, yToCanvas, padding, plotWidth, plotHeight, xMetric, yMetric) {
+      const tickCount = 5;
+
+      ctx.font = '11px Arial';
+      ctx.strokeStyle = '#22272e';
+      ctx.fillStyle = '#8f98a6';
+      ctx.lineWidth = 1;
+
+      for (let index = 0; index < tickCount; index += 1) {
+        const ratio = tickCount === 1 ? 0 : index / (tickCount - 1);
+        const xValue = minX + ((maxX - minX) * ratio);
+        const x = xToCanvas(xValue);
+
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, padding.top + plotHeight);
+        ctx.stroke();
+
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(formatAxisTick(xValue, xMetric), x, padding.top + plotHeight + 8);
+
+        const yValue = minY + ((maxY - minY) * ratio);
+        const y = yToCanvas(yValue);
+
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + plotWidth, y);
+        ctx.stroke();
+
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(formatAxisTick(yValue, yMetric), padding.left - 8, y);
+      }
     }
 
     function drawScatter(points, xMetric, yMetric) {
@@ -633,6 +907,8 @@
 
       const xToCanvas = (value) => padding.left + ((value - minX) / (maxX - minX)) * plotWidth;
       const yToCanvas = (value) => padding.top + plotHeight - ((value - minY) / (maxY - minY)) * plotHeight;
+
+      drawAxisTicks(ctx, minX, maxX, minY, maxY, xToCanvas, yToCanvas, padding, plotWidth, plotHeight, xMetric, yMetric);
 
       ctx.strokeStyle = '#2b3038';
       ctx.lineWidth = 1;
@@ -684,7 +960,7 @@
       });
     }
 
-    function renderOutliers(points, xMetric, yMetric) {
+    function renderTopVideos(points, xMetric, yMetric) {
       const formatterX = BI_METRICS[xMetric].format;
       const formatterY = BI_METRICS[yMetric].format;
       const rows = [...points]
@@ -692,11 +968,11 @@
         .slice(0, 8);
 
       if (rows.length === 0) {
-        $('#correlation-outliers').innerHTML = '<tr><td class="empty" colspan="5">表示できる動画がありません。</td></tr>';
+        $('#correlation-top-videos').innerHTML = '<tr><td class="empty" colspan="5">表示できる動画がありません。</td></tr>';
         return;
       }
 
-      $('#correlation-outliers').innerHTML = rows.map((row) => `
+      $('#correlation-top-videos').innerHTML = rows.map((row) => `
         <tr class="clickable-row" data-video-url="${escapeHtml(row.videoUrl)}" tabindex="0">
           <td>${escapeHtml(row.title || '-')}</td>
           <td class="right">${escapeHtml(formatterX(row.xRaw))}</td>
@@ -707,13 +983,62 @@
       `).join('');
     }
 
+    function findCorrelationPoint(event) {
+      const canvas = $('#correlation-canvas');
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const x = (event.clientX - rect.left) * scaleX;
+      const y = (event.clientY - rect.top) * scaleY;
+
+      return state.correlationPoints.find((point) => {
+        const dx = point.cx - x;
+        const dy = point.cy - y;
+        return Math.sqrt((dx * dx) + (dy * dy)) <= 8;
+      });
+    }
+
+    function showCorrelationTooltip(event, point) {
+      const tooltip = $('#correlation-tooltip');
+      const panelRect = event.currentTarget.parentElement.getBoundingClientRect();
+      const xMetric = $('#x-metric').value;
+      const yMetric = $('#y-metric').value;
+      const xValue = BI_METRICS[xMetric].format(point.xRaw);
+      const yValue = BI_METRICS[yMetric].format(point.yRaw);
+
+      tooltip.innerHTML = `
+        <span class="tooltip-title">${escapeHtml(point.title || '-')}</span>
+        <span class="tooltip-meta">
+          ${escapeHtml(formatDate(point.publishedAt))} / ${escapeHtml(point.videoType || '-')}<br>
+          ${escapeHtml(BI_METRICS[xMetric].label)}: ${escapeHtml(xValue)}<br>
+          ${escapeHtml(BI_METRICS[yMetric].label)}: ${escapeHtml(yValue)}
+        </span>
+      `;
+
+      const left = Math.min(
+        panelRect.width - 336,
+        Math.max(12, event.clientX - panelRect.left + 14)
+      );
+      const top = Math.min(
+        panelRect.height - 120,
+        Math.max(12, event.clientY - panelRect.top + 14)
+      );
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+      tooltip.hidden = false;
+    }
+
+    function hideCorrelationTooltip() {
+      $('#correlation-tooltip').hidden = true;
+    }
+
     async function renderCorrelation() {
       if (!state.conn) return;
 
       const xMetric = $('#x-metric').value;
       const yMetric = $('#y-metric').value;
       const colorMetric = $('#color-metric').value;
-      const limit = Number($('#point-limit').value || 600);
 
       if (!BI_METRICS[xMetric] || !BI_METRICS[yMetric]) {
         throw new Error('Invalid metric selection.');
@@ -731,10 +1056,7 @@
         FROM videos_bi
         ${getBiWhereSql(xMetric, yMetric)}
         ORDER BY view_count_num DESC NULLS LAST
-        LIMIT 3000
       `));
-      const useXLog = $('#x-log').checked;
-      const useYLog = $('#y-log').checked;
       const points = rows
         .map((row) => ({
           videoId: row.video_id,
@@ -745,21 +1067,21 @@
           colorValue: row.color_value,
           xRaw: row.x_value,
           yRaw: row.y_value,
-          xPlot: getMetricValue(row.x_value, useXLog),
-          yPlot: getMetricValue(row.y_value, useYLog)
+          xPlot: getMetricValue(row.x_value),
+          yPlot: getMetricValue(row.y_value)
         }))
         .filter((point) => point.xPlot !== null && point.yPlot !== null);
-      const trimmedPoints = trimPointOutliers(points).slice(0, limit);
-      const correlation = calculatePearson(trimmedPoints);
+      const visiblePoints = points;
+      const correlation = calculatePearson(visiblePoints);
 
-      $('#corr-n').textContent = trimmedPoints.length.toLocaleString('ja-JP');
+      $('#corr-n').textContent = visiblePoints.length.toLocaleString('ja-JP');
       $('#corr-r').textContent = correlation === null
         ? '-'
         : correlation.toLocaleString('ja-JP', { maximumFractionDigits: 3 });
-      $('#bi-summary').textContent = `${BI_METRICS[xMetric].label} x ${BI_METRICS[yMetric].label} | n=${trimmedPoints.length.toLocaleString('ja-JP')}`;
+      $('#bi-summary').textContent = `${BI_METRICS[xMetric].label} x ${BI_METRICS[yMetric].label} | n=${visiblePoints.length.toLocaleString('ja-JP')}`;
 
-      drawScatter(trimmedPoints, xMetric, yMetric);
-      renderOutliers(trimmedPoints, xMetric, yMetric);
+      drawScatter(visiblePoints, xMetric, yMetric);
+      renderTopVideos(visiblePoints, xMetric, yMetric);
     }
 
     async function loadSpreadsheet() {
@@ -804,6 +1126,7 @@
         await refreshFilterOptions();
         $('#live-filter').value = state.filterValue;
         renderCorrelationTemplates();
+        await refreshBiFilterOptions();
         await renderPage(1);
         await renderCorrelation();
       } finally {
@@ -948,7 +1271,15 @@
       renderCorrelation().catch(handleError);
     });
 
-    ['x-metric', 'y-metric', 'color-metric', 'bi-filter', 'point-limit', 'x-log', 'y-log', 'trim-outliers'].forEach((id) => {
+    ['x-metric', 'y-metric', 'color-metric'].forEach((id) => {
+      $(`#${id}`).addEventListener('change', () => {
+        state.activeCorrelationTemplate = '';
+        renderCorrelationTemplates();
+        renderCorrelation().catch(handleError);
+      });
+    });
+
+    ['bi-filter', 'published-year-filter', 'published-hour-filter'].forEach((id) => {
       $(`#${id}`).addEventListener('change', () => {
         state.activeCorrelationTemplate = '';
         renderCorrelationTemplates();
@@ -960,6 +1291,54 @@
       if (event.key === 'Enter') {
         renderCorrelation().catch(handleError);
       }
+    });
+
+    ['duration-start', 'duration-end'].forEach((id) => {
+      $(`#${id}`).addEventListener('input', () => {
+        updateDurationSliderLabels();
+        renderCorrelation().catch(handleError);
+      });
+    });
+
+    ['duration-start', 'duration-end'].forEach((id) => {
+      $(`#${id}-label`).addEventListener('change', () => {
+        setDurationFromInput(id);
+      });
+
+      $(`#${id}-label`).addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.currentTarget.blur();
+        }
+      });
+    });
+
+    $('#clear-duration-filter').addEventListener('click', () => {
+      resetDurationFilter();
+      renderCorrelation().catch(handleError);
+    });
+
+    ['published-date-start', 'published-date-end'].forEach((id) => {
+      $(`#${id}`).addEventListener('input', () => {
+        updatePublishedDateSliderLabels();
+        renderCorrelation().catch(handleError);
+      });
+    });
+
+    ['published-date-start', 'published-date-end'].forEach((id) => {
+      $(`#${id}-label`).addEventListener('change', () => {
+        setPublishedDateFromInput(id);
+      });
+
+      $(`#${id}-label`).addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.currentTarget.blur();
+        }
+      });
+    });
+
+    $('#clear-published-date-filter').addEventListener('click', () => {
+      resetPublishedDateFilter();
+      renderCorrelation().catch(handleError);
     });
 
     $('#tbody').addEventListener('click', (event) => {
@@ -982,7 +1361,7 @@
       }
     });
 
-    $('#correlation-outliers').addEventListener('click', (event) => {
+    $('#correlation-top-videos').addEventListener('click', (event) => {
       const row = event.target.closest('tr[data-video-url]');
       const url = row?.dataset.videoUrl;
 
@@ -992,20 +1371,27 @@
     });
 
     $('#correlation-canvas').addEventListener('click', (event) => {
-      const rect = event.currentTarget.getBoundingClientRect();
-      const scaleX = event.currentTarget.width / rect.width;
-      const scaleY = event.currentTarget.height / rect.height;
-      const x = (event.clientX - rect.left) * scaleX;
-      const y = (event.clientY - rect.top) * scaleY;
-      const hit = state.correlationPoints.find((point) => {
-        const dx = point.cx - x;
-        const dy = point.cy - y;
-        return Math.sqrt((dx * dx) + (dy * dy)) <= 8;
-      });
+      const hit = findCorrelationPoint(event);
 
       if (hit?.videoUrl) {
         window.open(hit.videoUrl, '_blank', 'noopener');
       }
+    });
+
+    $('#correlation-canvas').addEventListener('mousemove', (event) => {
+      const hit = findCorrelationPoint(event);
+
+      if (hit) {
+        event.currentTarget.style.cursor = 'pointer';
+        showCorrelationTooltip(event, hit);
+      } else {
+        event.currentTarget.style.cursor = 'default';
+        hideCorrelationTooltip();
+      }
+    });
+
+    $('#correlation-canvas').addEventListener('mouseleave', () => {
+      hideCorrelationTooltip();
     });
 
     initializeBiControls();

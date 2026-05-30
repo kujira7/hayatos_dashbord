@@ -32,34 +32,10 @@
       </div>
 
       <div class="nav-section">
-        <div class="nav-label">登録・運用</div>
+        <div class="nav-label">分析</div>
         <div class="nav-item" data-view="bi" tabindex="0">
           <span class="nav-dot"></span>
           <span>BI dashboard</span>
-          <span class="nav-count"></span>
-        </div>
-        <div class="nav-item">
-          <span class="nav-dot"></span>
-          <span>登録待ち</span>
-          <span class="nav-count">-</span>
-        </div>
-        <div class="nav-item">
-          <span class="nav-dot"></span>
-          <span>AI分析エクスポート</span>
-          <span class="nav-count"></span>
-        </div>
-      </div>
-
-      <div class="nav-section">
-        <div class="nav-label">管理</div>
-        <div class="nav-item">
-          <span class="nav-dot"></span>
-          <span>ゲーム管理</span>
-          <span class="nav-count"></span>
-        </div>
-        <div class="nav-item">
-          <span class="nav-dot"></span>
-          <span>設定</span>
           <span class="nav-count"></span>
         </div>
       </div>
@@ -138,57 +114,100 @@
           <div class="template-grid" id="correlation-templates"></div>
 
           <div class="analysis-panel">
-            <div class="control-grid">
-              <label class="control-field">
-                <span class="control-label">X軸</span>
-                <select id="x-metric"></select>
-              </label>
-              <label class="control-field">
-                <span class="control-label">Y軸</span>
-                <select id="y-metric"></select>
-              </label>
-              <label class="control-field">
-                <span class="control-label">色分け</span>
-                <select id="color-metric">
-                  <option value="video_type">動画種別</option>
-                  <option value="published_month">公開月</option>
-                  <option value="duration_bucket">尺</option>
-                </select>
-              </label>
-              <label class="control-field">
-                <span class="control-label">対象</span>
-                <select id="bi-filter">
-                  <option value="category:all">ALL</option>
-                  <option value="category:live">LIVE</option>
-                  <option value="category:normal">通常動画</option>
-                  <option value="category:shorts">Shorts</option>
-                </select>
-              </label>
-            </div>
-
-            <div class="control-grid" style="margin-top:12px;">
-              <label class="control-field">
-                <span class="control-label">キーワード</span>
-                <input id="bi-keyword" type="search" placeholder="タイトル検索">
-              </label>
-              <label class="control-field">
-                <span class="control-label">点数</span>
-                <select id="point-limit">
-                  <option value="300">300</option>
-                  <option value="600" selected>600</option>
-                  <option value="1000">1000</option>
-                </select>
-              </label>
-              <div class="control-field">
-                <span class="control-label">表示</span>
-                <div class="toggle-row" style="margin-top:0;">
-                  <label><input id="x-log" type="checkbox"> X log</label>
-                  <label><input id="y-log" type="checkbox"> Y log</label>
-                  <label><input id="trim-outliers" type="checkbox"> 外れ値を抑制</label>
+            <div class="control-section">
+              <div class="control-section-title">グラフ設定</div>
+              <div class="control-grid graph-control-grid">
+                <label class="control-field">
+                  <span class="control-label">X軸</span>
+                  <select id="x-metric"></select>
+                </label>
+                <label class="control-field">
+                  <span class="control-label">Y軸</span>
+                  <select id="y-metric"></select>
+                </label>
+                <label class="control-field">
+                  <span class="control-label">色分け</span>
+                  <select id="color-metric">
+                    <option value="video_type">動画種別</option>
+                    <option value="published_month">公開月</option>
+                    <option value="duration_bucket">尺</option>
+                  </select>
+                </label>
+                <div class="control-field">
+                  <span class="control-label">&nbsp;</span>
+                  <button id="run-correlation" type="button">分析を更新</button>
                 </div>
               </div>
-              <div class="control-field">
-                <button id="run-correlation" type="button">分析を更新</button>
+            </div>
+
+            <div class="control-section">
+              <div class="control-section-title">絞り込み条件</div>
+              <div class="control-grid filter-control-grid">
+                <label class="control-field">
+                  <span class="control-label">動画種別</span>
+                  <select id="bi-filter">
+                    <option value="category:all">ALL</option>
+                    <option value="category:live">LIVE</option>
+                    <option value="category:normal">通常動画</option>
+                    <option value="category:shorts">Shorts</option>
+                  </select>
+                </label>
+                <label class="control-field">
+                  <span class="control-label">公開年</span>
+                  <select id="published-year-filter">
+                    <option value="">ALL</option>
+                  </select>
+                </label>
+                <label class="control-field">
+                  <span class="control-label">公開時間</span>
+                  <select id="published-hour-filter">
+                    <option value="">ALL</option>
+                  </select>
+                </label>
+                <label class="control-field">
+                  <span class="control-label">キーワード</span>
+                  <input id="bi-keyword" type="search" placeholder="タイトル検索">
+                </label>
+              </div>
+            </div>
+
+            <div class="range-filter-grid">
+              <div class="range-filter-card">
+                <div class="date-filter-head">
+                  <span class="control-label">尺</span>
+                  <button id="clear-duration-filter" class="small-button" type="button">ALL</button>
+                </div>
+                <div class="range-value-row">
+                  <input id="duration-start-label" class="range-value-input" type="text" value="-" aria-label="尺 開始">
+                  <span>to</span>
+                  <input id="duration-end-label" class="range-value-input" type="text" value="-" aria-label="尺 終了">
+                </div>
+                <div class="range-control">
+                  <div class="range-track">
+                    <div id="duration-range-fill" class="range-fill"></div>
+                  </div>
+                  <input id="duration-start" class="range-input" type="range" min="0" max="0" value="0" disabled>
+                  <input id="duration-end" class="range-input" type="range" min="0" max="0" value="0" disabled>
+                </div>
+              </div>
+
+              <div class="range-filter-card">
+                <div class="date-filter-head">
+                  <span class="control-label">公開日</span>
+                  <button id="clear-published-date-filter" class="small-button" type="button">ALL</button>
+                </div>
+                <div class="range-value-row">
+                  <input id="published-date-start-label" class="range-value-input" type="text" value="-" aria-label="公開日 開始">
+                  <span>to</span>
+                  <input id="published-date-end-label" class="range-value-input" type="text" value="-" aria-label="公開日 終了">
+                </div>
+                <div class="range-control">
+                  <div class="range-track">
+                    <div id="published-date-range-fill" class="range-fill"></div>
+                  </div>
+                  <input id="published-date-start" class="range-input" type="range" min="0" max="0" value="0" disabled>
+                  <input id="published-date-end" class="range-input" type="range" min="0" max="0" value="0" disabled>
+                </div>
               </div>
             </div>
           </div>
@@ -196,6 +215,7 @@
           <div class="chart-shell">
             <div class="chart-panel">
               <canvas id="correlation-canvas" class="scatter-canvas" width="980" height="430"></canvas>
+              <div id="correlation-tooltip" class="chart-tooltip" hidden></div>
             </div>
 
             <div class="metric-stack">
@@ -219,17 +239,17 @@
           </div>
 
           <div class="table-wrap" style="border-top:1px solid var(--line); margin-top:14px;">
-            <table class="outlier-table">
+            <table class="top-video-table">
               <thead>
                 <tr>
-                  <th>注目動画</th>
+                  <th>Y軸上位動画</th>
                   <th class="right">X</th>
                   <th class="right">Y</th>
                   <th>種別</th>
                   <th>公開日</th>
                 </tr>
               </thead>
-              <tbody id="correlation-outliers">
+              <tbody id="correlation-top-videos">
                 <tr><td class="empty" colspan="5">分析を実行してください。</td></tr>
               </tbody>
             </table>
