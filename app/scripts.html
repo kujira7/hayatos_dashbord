@@ -7,15 +7,50 @@
     const CACHE_KEY = 'videos';
     const CACHE_SCHEMA_VERSION = 1;
     const $ = (selector) => document.querySelector(selector);
+    const VIDEO_TYPE_SQL = {
+      raw: `CASE
+        WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
+        WHEN COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60 THEN 'Shorts'
+        ELSE '通常動画'
+      END`,
+      bi: `CASE
+        WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
+        WHEN COALESCE(duration_sec_num, 999999) <= 60 THEN 'Shorts'
+        ELSE '通常動画'
+      END`
+    };
+    const CATEGORY_FILTERS = {
+      'category:all': {
+        label: 'ALL',
+        countKey: 'rowCount',
+        rawCondition: '',
+        biCondition: ''
+      },
+      'category:live': {
+        label: 'LIVE',
+        countKey: 'live',
+        rawCondition: `(${VIDEO_TYPE_SQL.raw}) = 'LIVE'`,
+        biCondition: "video_type = 'LIVE'"
+      },
+      'category:normal': {
+        label: '通常動画',
+        countKey: 'normal',
+        rawCondition: `(${VIDEO_TYPE_SQL.raw}) = '通常動画'`,
+        biCondition: "video_type = '通常動画'"
+      },
+      'category:shorts': {
+        label: 'Shorts',
+        countKey: 'shorts',
+        rawCondition: `(${VIDEO_TYPE_SQL.raw}) = 'Shorts'`,
+        biCondition: "video_type = 'Shorts'"
+      }
+    };
+    const CATEGORY_FILTER_ORDER = ['category:all', 'category:live', 'category:normal', 'category:shorts'];
     const SORT_COLUMNS = {
       title: { expression: 'lower(title)', defaultDirection: 'asc' },
       published_at: { expression: "try_cast(published_at AS TIMESTAMP)", defaultDirection: 'desc' },
       video_type: {
-        expression: `CASE
-          WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
-          WHEN COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60 THEN 'Shorts'
-          ELSE '通常動画'
-        END`,
+        expression: VIDEO_TYPE_SQL.raw,
         defaultDirection: 'asc'
       },
       visibility: { expression: 'visibility', defaultDirection: 'asc' },
@@ -305,26 +340,20 @@
       return String(value).replace(/'/g, "''");
     }
 
+    function getCategoryFilter(value) {
+      return CATEGORY_FILTERS[value] || CATEGORY_FILTERS['category:all'];
+    }
+
+    function getCategoryCount(filter) {
+      return filter.countKey === 'rowCount'
+        ? state.rowCount
+        : state.categoryCounts[filter.countKey];
+    }
+
     function getWhereSql() {
-      if (state.filterValue === 'category:all') {
-        return '';
-      }
+      const condition = getCategoryFilter(state.filterValue).rawCondition;
 
-      if (state.filterValue === 'category:normal') {
-        return `
-          WHERE COALESCE(live_type, '') NOT LIKE '%LIVE%'
-            AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) > 60
-        `;
-      }
-
-      if (state.filterValue === 'category:shorts') {
-        return `
-          WHERE COALESCE(live_type, '') NOT LIKE '%LIVE%'
-            AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60
-        `;
-      }
-
-      return "WHERE COALESCE(live_type, '') LIKE '%LIVE%'";
+      return condition ? `WHERE ${condition}` : '';
     }
 
     function getOrderBySql() {
@@ -338,22 +367,12 @@
     }
 
     function getFilterLabel() {
-      if (state.filterValue === 'category:all') return 'ALL';
-      if (state.filterValue === 'category:normal') return '通常動画';
-      if (state.filterValue === 'category:shorts') return 'Shorts';
-      return 'LIVE';
+      return getCategoryFilter(state.filterValue).label;
     }
 
     function formatNumber(value) {
       if (value === null || value === undefined || value === '') return '-';
       return Number(value).toLocaleString('ja-JP');
-    }
-
-    function formatDecimal(value) {
-      if (value === null || value === undefined || value === '') return '-';
-      const number = Number(value);
-      if (!Number.isFinite(number)) return '-';
-      return number.toLocaleString('ja-JP', { maximumFractionDigits: 1 });
     }
 
     function formatHour(value) {
@@ -578,33 +597,35 @@
       });
     }
 
+    function setDatasetControlsDisabled(disabled) {
+      $('#load-button').disabled = disabled;
+      $('#refresh-button').disabled = disabled;
+      $('#live-filter').disabled = disabled;
+      $('#page-size-select').disabled = disabled;
+
+      if (disabled) {
+        setPagerButtonsDisabled(true);
+      } else if (state.conn) {
+        renderPager();
+      }
+    }
+
     async function refreshFilterOptions() {
-      $('#live-filter').innerHTML = [
-        `<option value="category:all">ALL (${state.rowCount.toLocaleString('ja-JP')})</option>`,
-        `<option value="category:live">LIVE (${state.categoryCounts.live.toLocaleString('ja-JP')})</option>`,
-        `<option value="category:normal">通常動画 (${state.categoryCounts.normal.toLocaleString('ja-JP')})</option>`,
-        `<option value="category:shorts">Shorts (${state.categoryCounts.shorts.toLocaleString('ja-JP')})</option>`
-      ].join('');
+      $('#live-filter').innerHTML = CATEGORY_FILTER_ORDER.map((value) => {
+        const filter = getCategoryFilter(value);
+        const count = getCategoryCount(filter).toLocaleString('ja-JP');
+
+        return `<option value="${value}">${filter.label} (${count})</option>`;
+      }).join('');
     }
 
     async function refreshCategoryCounts() {
       const rows = arrowRows(await state.conn.query(`
         SELECT
           count(*)::VARCHAR AS total_count,
-          sum(CASE
-            WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 1
-            ELSE 0
-          END)::VARCHAR AS live_count,
-          sum(CASE
-            WHEN COALESCE(live_type, '') NOT LIKE '%LIVE%'
-              AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) <= 60 THEN 1
-            ELSE 0
-          END)::VARCHAR AS shorts_count,
-          sum(CASE
-            WHEN COALESCE(live_type, '') NOT LIKE '%LIVE%'
-              AND COALESCE(try_cast(duration_sec AS BIGINT), 999999) > 60 THEN 1
-            ELSE 0
-          END)::VARCHAR AS normal_count
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = 'LIVE' THEN 1 ELSE 0 END)::VARCHAR AS live_count,
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = 'Shorts' THEN 1 ELSE 0 END)::VARCHAR AS shorts_count,
+          sum(CASE WHEN (${VIDEO_TYPE_SQL.raw}) = '通常動画' THEN 1 ELSE 0 END)::VARCHAR AS normal_count
         FROM videos
       `));
       const row = rows[0] || {};
@@ -680,11 +701,7 @@
         enriched AS (
           SELECT
             *,
-            CASE
-              WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE'
-              WHEN COALESCE(duration_sec_num, 999999) <= 60 THEN 'Shorts'
-              ELSE '通常動画'
-            END AS video_type,
+            ${VIDEO_TYPE_SQL.bi} AS video_type,
             CASE
               WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 3600 THEN 'LIVE 1h未満'
               WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 7200 THEN 'LIVE 1-2h'
@@ -885,7 +902,7 @@
       const value = Math.max(state.durationRange.min, Math.min(state.durationRange.max, parsed));
       slider.value = String(value);
       updateDurationSliderLabels();
-      renderCorrelation().catch(handleError);
+      rerenderCorrelation();
     }
 
     function findNearestPublishedDateIndex(dateText) {
@@ -924,7 +941,7 @@
 
       slider.value = String(index);
       updatePublishedDateSliderLabels();
-      renderCorrelation().catch(handleError);
+      rerenderCorrelation();
     }
 
     function updateRangeFill(prefix, min, max, start, end) {
@@ -967,8 +984,17 @@
       renderCorrelationTemplates();
 
       if (shouldRender && state.conn) {
-        renderCorrelation().catch(handleError);
+        rerenderCorrelation();
       }
+    }
+
+    function markCorrelationTemplateCustom() {
+      state.activeCorrelationTemplate = '';
+      renderCorrelationTemplates();
+    }
+
+    function rerenderCorrelation() {
+      renderCorrelation().catch(handleError);
     }
 
     function getBiWhereSql(xMetric, yMetric) {
@@ -977,18 +1003,15 @@
         `${yMetric} IS NOT NULL`
       ];
       const filterValue = $('#bi-filter').value;
+      const categoryCondition = getCategoryFilter(filterValue).biCondition;
       const durationRange = getDurationRange();
       const publishedDateRange = getPublishedDateRange();
       const publishedYear = $('#published-year-filter').value;
       const publishedHour = $('#published-hour-filter').value;
       const keyword = $('#bi-keyword').value.trim();
 
-      if (filterValue === 'category:live') {
-        conditions.push("video_type = 'LIVE'");
-      } else if (filterValue === 'category:normal') {
-        conditions.push("video_type = '通常動画'");
-      } else if (filterValue === 'category:shorts') {
-        conditions.push("video_type = 'Shorts'");
+      if (categoryCondition) {
+        conditions.push(categoryCondition);
       }
 
       if (keyword) {
@@ -1436,11 +1459,7 @@
       const totalStart = performance.now();
       let renderedFromCache = false;
 
-      $('#load-button').disabled = true;
-      $('#refresh-button').disabled = true;
-      setPagerButtonsDisabled(true);
-      $('#live-filter').disabled = true;
-      $('#page-size-select').disabled = true;
+      setDatasetControlsDisabled(true);
       $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込み中...</td></tr>';
 
       try {
@@ -1504,10 +1523,7 @@
           renderPager();
         }
 
-        $('#load-button').disabled = false;
-        $('#refresh-button').disabled = false;
-        $('#live-filter').disabled = false;
-        $('#page-size-select').disabled = false;
+        setDatasetControlsDisabled(false);
       }
     }
 
@@ -1543,11 +1559,7 @@
     }
 
     async function refreshFromYouTube() {
-      $('#load-button').disabled = true;
-      $('#refresh-button').disabled = true;
-      setPagerButtonsDisabled(true);
-      $('#live-filter').disabled = true;
-      $('#page-size-select').disabled = true;
+      setDatasetControlsDisabled(true);
 
       try {
         setStatus('YouTubeから全データ再取得中...', { type: 'loading' });
@@ -1558,10 +1570,7 @@
           renderPager();
         }
 
-        $('#load-button').disabled = false;
-        $('#refresh-button').disabled = false;
-        $('#live-filter').disabled = false;
-        $('#page-size-select').disabled = false;
+        setDatasetControlsDisabled(false);
       }
     }
 
@@ -1586,9 +1595,20 @@
         document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
           item.classList.remove('active');
         });
-        renderCorrelation().catch(handleError);
+        rerenderCorrelation();
       } else {
         renderCounts();
+      }
+    }
+
+    function openVideoUrlFromEvent(event) {
+      if (event.type === 'keydown' && event.key !== 'Enter') return;
+
+      const row = event.target.closest('tr[data-video-url]');
+      const url = row?.dataset.videoUrl;
+
+      if (url) {
+        window.open(url, '_blank', 'noopener');
       }
     }
 
@@ -1705,37 +1725,34 @@
     });
 
     $('#run-correlation').addEventListener('click', () => {
-      state.activeCorrelationTemplate = '';
-      renderCorrelationTemplates();
-      renderCorrelation().catch(handleError);
+      markCorrelationTemplateCustom();
+      rerenderCorrelation();
     });
 
     ['x-metric', 'y-metric', 'color-metric', 'plot-mode'].forEach((id) => {
       $(`#${id}`).addEventListener('change', () => {
-        state.activeCorrelationTemplate = '';
-        renderCorrelationTemplates();
-        renderCorrelation().catch(handleError);
+        markCorrelationTemplateCustom();
+        rerenderCorrelation();
       });
     });
 
     ['bi-filter', 'published-year-filter', 'published-hour-filter'].forEach((id) => {
       $(`#${id}`).addEventListener('change', () => {
-        state.activeCorrelationTemplate = '';
-        renderCorrelationTemplates();
-        renderCorrelation().catch(handleError);
+        markCorrelationTemplateCustom();
+        rerenderCorrelation();
       });
     });
 
     $('#bi-keyword').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
-        renderCorrelation().catch(handleError);
+        rerenderCorrelation();
       }
     });
 
     ['duration-start', 'duration-end'].forEach((id) => {
       $(`#${id}`).addEventListener('input', () => {
         updateDurationSliderLabels();
-        renderCorrelation().catch(handleError);
+        rerenderCorrelation();
       });
     });
 
@@ -1753,13 +1770,13 @@
 
     $('#clear-duration-filter').addEventListener('click', () => {
       resetDurationFilter();
-      renderCorrelation().catch(handleError);
+      rerenderCorrelation();
     });
 
     ['published-date-start', 'published-date-end'].forEach((id) => {
       $(`#${id}`).addEventListener('input', () => {
         updatePublishedDateSliderLabels();
-        renderCorrelation().catch(handleError);
+        rerenderCorrelation();
       });
     });
 
@@ -1777,37 +1794,12 @@
 
     $('#clear-published-date-filter').addEventListener('click', () => {
       resetPublishedDateFilter();
-      renderCorrelation().catch(handleError);
+      rerenderCorrelation();
     });
 
-    $('#tbody').addEventListener('click', (event) => {
-      const row = event.target.closest('tr[data-video-url]');
-      const url = row?.dataset.videoUrl;
-
-      if (url) {
-        window.open(url, '_blank', 'noopener');
-      }
-    });
-
-    $('#tbody').addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter') return;
-
-      const row = event.target.closest('tr[data-video-url]');
-      const url = row?.dataset.videoUrl;
-
-      if (url) {
-        window.open(url, '_blank', 'noopener');
-      }
-    });
-
-    $('#correlation-top-videos').addEventListener('click', (event) => {
-      const row = event.target.closest('tr[data-video-url]');
-      const url = row?.dataset.videoUrl;
-
-      if (url) {
-        window.open(url, '_blank', 'noopener');
-      }
-    });
+    $('#tbody').addEventListener('click', openVideoUrlFromEvent);
+    $('#tbody').addEventListener('keydown', openVideoUrlFromEvent);
+    $('#correlation-top-videos').addEventListener('click', openVideoUrlFromEvent);
 
     $('#correlation-canvas').addEventListener('click', (event) => {
       const hit = findCorrelationPoint(event);

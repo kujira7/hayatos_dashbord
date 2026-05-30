@@ -1,3 +1,17 @@
+const METADATA_KEYS = [
+  'last_refresh_started_at',
+  'last_refresh_finished_at',
+  'last_success_finished_at',
+  'last_refresh_status',
+  'last_refresh_trigger_type',
+  'last_refresh_error',
+  'row_count',
+  'schema_version',
+  'channel_id',
+  'channel_title',
+  'uploads_playlist_id'
+];
+
 function getDatasetCsv() {
   const totalStart = Date.now();
 
@@ -19,11 +33,7 @@ function getDatasetCsv() {
   const validateCsvMs = Date.now() - validateStart;
 
   return {
-    csvFile: {
-      id: file.getId(),
-      name: file.getName(),
-      lastUpdated: file.getLastUpdated().toISOString()
-    },
+    csvFile: createCsvFileSummary(file),
     metadata,
     rowCountIncludingHeader: getRowCountIncludingHeader(metadata, csv),
     dataRowCount: getDataRowCount(metadata, csv),
@@ -46,11 +56,7 @@ function getDatasetManifest() {
   const metadata = readMetadata();
 
   return {
-    csvFile: {
-      id: file.getId(),
-      name: file.getName(),
-      lastUpdated: file.getLastUpdated().toISOString()
-    },
+    csvFile: createCsvFileSummary(file),
     metadata,
     rowCountIncludingHeader: getRowCountIncludingHeader(metadata, ''),
     dataRowCount: getDataRowCount(metadata, ''),
@@ -59,6 +65,14 @@ function getDatasetManifest() {
     serverTimingsMs: {
       total: Date.now() - totalStart
     }
+  };
+}
+
+function createCsvFileSummary(file) {
+  return {
+    id: file.getId(),
+    name: file.getName(),
+    lastUpdated: file.getLastUpdated().toISOString()
   };
 }
 
@@ -96,22 +110,9 @@ function writeMetadata(metadata) {
 }
 
 function normalizeMetadata(metadata) {
-  const keys = [
-    'last_refresh_started_at',
-    'last_refresh_finished_at',
-    'last_success_finished_at',
-    'last_refresh_status',
-    'last_refresh_trigger_type',
-    'last_refresh_error',
-    'row_count',
-    'schema_version',
-    'channel_id',
-    'channel_title',
-    'uploads_playlist_id'
-  ];
   const normalized = {};
 
-  keys.forEach((key) => {
+  METADATA_KEYS.forEach((key) => {
     normalized[key] = formatMetadataValue(metadata[key]);
   });
 
