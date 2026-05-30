@@ -2,7 +2,7 @@ function getDatasetCsv() {
   const totalStart = Date.now();
 
   const getFileStart = Date.now();
-  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
+  const file = getOnlyDriveFileByName(VIDEO_CSV_FILE_NAME);
   const getFileMs = Date.now() - getFileStart;
 
   const readCsvStart = Date.now();
@@ -42,7 +42,7 @@ function getDatasetCsv() {
 
 function getDatasetManifest() {
   const totalStart = Date.now();
-  const file = getOnlyDriveFileByName(DATA_FOLDER_PATH, VIDEO_CSV_FILE_NAME);
+  const file = getOnlyDriveFileByName(VIDEO_CSV_FILE_NAME);
   const metadata = readMetadata();
 
   return {
@@ -63,7 +63,7 @@ function getDatasetManifest() {
 }
 
 function readMetadata() {
-  const file = getOnlyDriveFileByNameOrNull(DATA_FOLDER_PATH, METADATA_JSON_FILE_NAME);
+  const file = getOnlyDriveFileByNameOrNull(METADATA_JSON_FILE_NAME);
 
   if (!file) {
     return createDefaultMetadata();
@@ -144,10 +144,6 @@ function formatMetadataValue(value) {
 }
 
 function objectsToCsv(columns, objects) {
-  if (objects.length > MAX_DATA_ROWS) {
-    throw new Error(`Too many rows. rows=${objects.length}, max=${MAX_DATA_ROWS}`);
-  }
-
   const csv = [columns].concat(objects.map((object) => columns.map((column) => object[column])))
     .map((row) => row.map(formatCsvCell).join(','))
     .join('\n');
@@ -173,10 +169,6 @@ function validateCsv(csv, fileName) {
 
   if (lines.length === 0 || !lines[0]) {
     throw new Error(`CSV is empty. file=${fileName}`);
-  }
-
-  if (lines.length - 1 > MAX_DATA_ROWS) {
-    throw new Error(`Too many rows. file=${fileName}, rows=${lines.length - 1}, max=${MAX_DATA_ROWS}`);
   }
 
   const columns = parseCsvLine(lines[0]).map((value) => String(value || '').trim());
@@ -249,8 +241,8 @@ function parseCsvLine(line) {
 }
 
 function writeDriveFile(fileName, content, mimeType) {
-  const folder = getOrCreateFolderByPath(DRIVE_ROOT_FOLDER_ID, DATA_FOLDER_PATH);
-  const file = getOnlyDriveFileByNameOrNull(DATA_FOLDER_PATH, fileName);
+  const folder = DriveApp.getFolderById(DRIVE_ROOT_FOLDER_ID);
+  const file = getOnlyDriveFileByNameOrNull(fileName);
 
   if (file) {
     file.setContent(content);
@@ -260,18 +252,18 @@ function writeDriveFile(fileName, content, mimeType) {
   return folder.createFile(fileName, content, mimeType);
 }
 
-function getOnlyDriveFileByName(folderPath, fileName) {
-  const file = getOnlyDriveFileByNameOrNull(folderPath, fileName);
+function getOnlyDriveFileByName(fileName) {
+  const file = getOnlyDriveFileByNameOrNull(fileName);
 
   if (!file) {
-    throw new Error(`Drive file not found. folderPath=${folderPath}, name=${fileName}`);
+    throw new Error(`Drive file not found. name=${fileName}`);
   }
 
   return file;
 }
 
-function getOnlyDriveFileByNameOrNull(folderPath, fileName) {
-  const folder = getOrCreateFolderByPath(DRIVE_ROOT_FOLDER_ID, folderPath);
+function getOnlyDriveFileByNameOrNull(fileName) {
+  const folder = DriveApp.getFolderById(DRIVE_ROOT_FOLDER_ID);
   const files = folder.getFilesByName(fileName);
 
   if (!files.hasNext()) {
@@ -281,27 +273,8 @@ function getOnlyDriveFileByNameOrNull(folderPath, fileName) {
   const file = files.next();
 
   if (files.hasNext()) {
-    throw new Error(`Duplicate Drive file name. folderPath=${folderPath}, name=${fileName}`);
+    throw new Error(`Duplicate Drive file name. name=${fileName}`);
   }
 
   return file;
-}
-
-function getOrCreateFolderByPath(rootFolderId, folderPath) {
-  const segments = String(folderPath || '').split('/').filter(Boolean);
-  let folder = DriveApp.getFolderById(rootFolderId);
-
-  segments.forEach((segment) => {
-    const folders = folder.getFoldersByName(segment);
-
-    folder = folders.hasNext()
-      ? folders.next()
-      : folder.createFolder(segment);
-
-    if (folders.hasNext()) {
-      throw new Error(`Duplicate folder name. folderPath=${folderPath}, folder=${segment}`);
-    }
-  });
-
-  return folder;
 }
