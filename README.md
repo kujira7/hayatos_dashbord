@@ -1,78 +1,123 @@
-# ハヤトの野望DB Web App 設計
+# ハヤトの野望DB
 
-## 目的
+Google Apps Script Web App で、ハヤトの野望 YouTube チャンネルの動画データを一覧・分析する dashboard。
 
-Google Apps Script と Google Sheets を使ってデータを定期更新し、Google Apps Script Web App 上で DuckDB-Wasm に読み込ませて動画一覧を表示する。
-
-## 採用する構成
+## 現在の構成
 
 ```text
-Google Apps Script time-driven trigger
-  -> scheduledRefresh()
-  -> refreshDataset()
-  -> Google Sheets 更新
-
-Web App 手動更新ボタン
-  -> manualRefresh()
-  -> refreshDataset()
-  -> Google Sheets 更新
-  -> 表示データ再読み込み
+YouTube Data API
+  -> fetchYouTubeDataset()
+  -> Drive CSV / metadata JSON 更新
 
 Web App 初期表示 / 再読み込み
-  -> getSpreadsheetCsv()
-  -> DuckDB-Wasm
-  -> read_csv_auto()
-  -> SQL query
-  -> HTML table
+  -> getDatasetManifest()
+  -> getDatasetCsv()
+  -> Browser IndexedDB cache
+  -> DuckDB-Wasm read_csv_auto()
+  -> 動画一覧 / BI dashboard
+
+Web App 手動更新
+  -> manualRefresh()
+  -> refreshDataset()
+  -> Drive CSV / metadata JSON 更新
+  -> 表示データ再読み込み
+
+Time-driven trigger
+  -> scheduledRefresh()
+  -> refreshDataset()
 ```
 
-## Drive / Spreadsheet
-
-Google Drive の保存先は次を使う。
+## ファイル構成
 
 ```text
-content/drive/MyDrive/ハヤトの野望/
-FOLDER_ID = '1BMLDFq1tZ7Jj69Pf0FMks80JTRTtC9S1'
+app/
+  code.gs             # 定数、doGet、include
+  youtube.gs          # YouTube Data API 取得
+  refresh.gs          # manualRefresh / scheduledRefresh / refreshDataset
+  spreadsheet.gs      # Drive CSV / metadata JSON 読み書き
+  index.html          # Web App HTML
+  styles.html         # Web App CSS
+  scripts.html        # DuckDB-Wasm、IndexedDB cache、画面制御
+  appsscript.json     # Apps Script manifest
+  package.json        # clasp / validation scripts
+tools/
+  validate-ui-contract.mjs
 ```
 
-Spreadsheet はこの folder の `data/` 内に 1 つ作る。
+## 保存先
+
+データは Spreadsheet ではなく、Google Drive folder 内の CSV / JSON file として保存する。
 
 ```text
-data/hayato_live_spreadsheet
+DRIVE_ROOT_FOLDER_ID = 1aJKQVs4vofOl-i9qfCbdjNXwGFkZA8vq
+VIDEO_CSV_FILE_NAME = hayato_live_videos.csv
+STAGING_VIDEO_CSV_FILE_NAME = hayato_live_videos.staging.csv
+METADATA_JSON_FILE_NAME = hayato_live_metadata.json
 ```
 
-本番用に名前を変える場合も、GAS 側では file name ではなく spreadsheet id を使うのが望ましい。
+`getOnlyDriveFileByNameOrNull()` は同名 file が複数ある場合に失敗する。対象 folder 内では上記 file name を重複させない。
 
-## Sheet 設計
+## 必須設定
 
-Spreadsheet 内の sheet は次の構成にする。
+Apps Script の Script properties に YouTube Data API key を設定する。
 
 ```text
-active
-staging
-metadata
+YOUTUBE_API_KEY
 ```
 
-`active` は Web App が常に読むデータ sheet。
-
-`staging` は YouTube から再取得したデータを一時的に書き込む sheet。`staging` の書き込みと検証が成功したら、`active` に copy する。
-
-`metadata` は更新状態を記録する。
+未設定の場合、`fetchYouTubeDataset()` は次の error で失敗する。
 
 ```text
-key,value
-last_refresh_started_at,2026-05-30T00:00:00+09:00
-last_refresh_finished_at,2026-05-30T00:01:00+09:00
-last_refresh_status,success
-last_refresh_trigger_type,daily
-last_refresh_error,
-row_count,10000
-schema_version,1
+Script property is required. name=YOUTUBE_API_KEY
 ```
 
-## データ schema
+## データ取得
 
-最初の schema は次を想定する。
+対象チャンネルは `CHANNEL_HANDLE = '@hayayabo'`。
+
+取得処理:
+
+1. `/channels` で channel と uploads playlist を取得する。
+2. `/playlistItems` で uploads playlist の video id を全件取得する。
+3. `/videos` を 50 件ずつ呼び、動画詳細を取得する。
+4. CSV に正規化する。
+5. staging CSV を書く。
+6. production CSV を書く。
+7. metadata JSON を更新する。
+
+同時実行は `LockService.getScriptLock()` で制御する。lock を取れない場合は待ち続けず、次の error で失敗する。
+
+```text
+Refresh is already running.
+```
+
+## CSV schema
+
+CSV の列は `VIDEO_COLUMNS` で定義する。
+
+```text
+video_id
+title
+published_at
+duration_sec
+live_type
+visibility
+peak_concurrent_viewers
+thumbnail_url
+duration_iso
+live_broadcast_content
+view_count
+like_count
+comment_count
+current_concurrent_viewers
+scheduled_start_time
+actual_start_time
+actual_end_time
+video_url
+fetched_at
+```
+
+UI が必須として検証する列は `UI_REQUIRED_COLUMNS`。
 
 ```text
 video_id
@@ -88,143 +133,57 @@ peak_concurrent_viewers
 thumbnail_url
 ```
 
-`published_at` は ISO 8601 文字列で保存する。DuckDB-Wasm 側で日時として扱う必要が出たら SQL で変換する。
+CSV payload は `MAX_CSV_BYTES = 9500000` bytes を超えると失敗する。
 
-## 更新処理
+## metadata JSON
 
-更新処理の入口は 2 つ持つ。
-
-```javascript
-function scheduledRefresh() {
-  return refreshDataset({ triggerType: 'daily' });
-}
-
-function manualRefresh() {
-  return refreshDataset({ triggerType: 'manual' });
-}
-```
-
-データ取得と Spreadsheet 書き込みの実体は `refreshDataset()` に集約する。
-
-```javascript
-function refreshDataset(options) {
-  // 1. LockService で同時実行を防ぐ
-  // 2. metadata に running を記録する
-  // 3. 外部 API からデータを取得する
-  // 4. staging sheet に全件を書き込む
-  // 5. staging sheet の required columns と row count を検証する
-  // 6. staging sheet を active sheet に copy する
-  // 7. active sheet を検証する
-  // 8. metadata に success を記録する
-}
-```
-
-`scheduledRefresh()` と `manualRefresh()` に別々の取得処理を書かない。入口だけを分け、処理本体は共通にする。
-
-## 同時実行制御
-
-`LockService.getScriptLock()` を使う。
-
-手動更新と daily 実行が同時に走った場合、後から来た実行は失敗させる。
+metadata JSON は次の key を持つ。
 
 ```text
-Refresh is already running.
+last_refresh_started_at
+last_refresh_finished_at
+last_success_finished_at
+last_refresh_status
+last_refresh_trigger_type
+last_refresh_error
+row_count
+schema_version
+channel_id
+channel_title
+uploads_playlist_id
 ```
 
-待ち続ける設計にはしない。Web App 側でエラーを表示する。`staging` の書き込みまたは検証で失敗した場合、古い `active` のデータを表示し続ける。
+値は `normalizeMetadata()` で文字列に正規化される。
 
-## active / staging
+## Web App
 
-Spreadsheet を直接見る人の認知負荷を下げるため、読み取り対象を `active`、更新用を `staging` に固定する。
+Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` と `scripts.html` は `include()` で読み込む。
 
-更新手順:
+画面:
+
+- 動画一覧
+- 種別 filter: `ALL` / `LIVE` / `通常動画` / `Shorts`
+- page size: `50` / `100` / `200` / `500`
+- sortable columns
+- BI dashboard
+- correlation scatter / density plot
+- YouTube から全データ再取得
+- Spreadsheet 再読み込みボタン名は残っているが、実体は Drive CSV 再読み込み
+
+Browser 側は `@duckdb/duckdb-wasm@1.29.0` を jsDelivr から import し、`read_csv_auto('videos.csv', header = true)` で view を作る。
+
+IndexedDB cache:
 
 ```text
-1. staging を clear する
-2. staging に header + rows を書く
-3. staging の row count と required columns を検証する
-4. active を clear する
-5. staging の values を active に copy する
-6. active の row count と required columns を検証する
-7. metadata に success を記録する
+CACHE_DB_NAME = hayato-live-dashboard
+CACHE_STORE_NAME = datasets
+CACHE_KEY = videos
+CACHE_SCHEMA_VERSION = 1
 ```
 
-`active` への copy は atomic ではない。このため、copy 中または copy 失敗時に Web App が空または途中状態の `active` を読む可能性はある。
+cache がある場合は先に cache から描画し、`getDatasetManifest()` で freshness を確認する。古ければ `getDatasetCsv()` で CSV を再取得する。
 
-このリスクより、Spreadsheet 上で `active` / `staging` の意味が直感的に分かることを優先する。
-
-## Web App 読み取り
-
-Web App は常に `active` sheet だけを読む。
-
-```javascript
-function getSpreadsheetCsv() {
-  // 1. active sheet の data range を読む
-  // 2. CSV 文字列に変換する
-  // 3. CSV と metadata を返す
-}
-```
-
-Browser 側では CSV を DuckDB-Wasm に登録する。
-
-```javascript
-await db.registerFileText('videos.csv', csv);
-
-await conn.query(`
-  CREATE OR REPLACE VIEW videos AS
-  SELECT *
-  FROM read_csv_auto('videos.csv', header = true)
-`);
-```
-
-表示用 SQL の例:
-
-```sql
-SELECT
-  video_id,
-  title,
-  published_at,
-  live_type,
-  visibility,
-  peak_concurrent_viewers,
-  thumbnail_url
-FROM videos
-ORDER BY peak_concurrent_viewers DESC
-LIMIT 200;
-```
-
-## 手動更新の画面動作
-
-Web App には手動更新ボタンを置く。
-
-```text
-1. button disabled
-2. manualRefresh() を呼ぶ
-3. success の場合 getSpreadsheetCsv() を呼ぶ
-4. DuckDB-Wasm の view を作り直す
-5. table を再描画する
-6. button enabled
-```
-
-失敗時:
-
-```text
-1. エラーを表示する
-2. 既存の表示データは残す
-3. metadata.last_refresh_error は更新する
-```
-
-## daily 実行
-
-Apps Script の installable time-driven trigger を使う。
-
-トリガーは Apps Script UI から `scheduledRefresh()` を対象に設定する。Web App UI から daily trigger の作成は行わない。
-
-Apps Script の time-driven trigger は指定時刻ちょうどではなく、一定範囲で実行時刻が決まる。厳密な実行時刻が必要な用途には使わない。
-
-## deploy
-
-Apps Script への反映は `clasp` を使う。
+## Apps Script
 
 `app/.clasp.json` は次の Apps Script project を指す。
 
@@ -232,76 +191,56 @@ Apps Script への反映は `clasp` を使う。
 SCRIPT_ID = 1jdiOHw9-1M-4aFZA5RS9qYK5FvCpYiSWq46chMEMu_-LhK6TnQQ7kN2b
 ```
 
-main deployment は次を使う。
+Web App deployment:
 
 ```text
 DEPLOYMENT_ID = AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc
+URL = https://script.google.com/macros/s/AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc/exec
 ```
 
-`app/` の内容を push して main deployment を更新する。
-
-```bash
-cd app
-npm run gas:release
-```
-
-release 後に Web App URL が表示される。
+`appsscript.json` の Web App 設定:
 
 ```text
-https://script.google.com/macros/s/AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc/exec
+executeAs = USER_DEPLOYING
+access = ANYONE_ANONYMOUS
+runtimeVersion = V8
+timeZone = Asia/Tokyo
 ```
 
-個別に実行する場合:
+## 開発コマンド
+
+`app/` directory で実行する。
 
 ```bash
+npm run validate:ui
+npm run gas:status
 npm run gas:push
 npm run gas:deploy
 npm run gas:url
+npm run gas:release
 ```
 
-`--deploymentId` なしの `clasp deploy` は新規 deployment を作る。Apps Script は versioned deployment 数に上限があるため、通常は使わない。
+`gas:*` commands は `mise exec npm:@google/clasp -- clasp ...` を使う。
 
-## 制限
+## 検証
 
-Apps Script の主な制限:
+UI contract の最低限の検証:
 
-```text
-Script runtime: 6 min / execution
-Triggers total runtime: 90 min / day for consumer accounts, 6 hr / day for Google Workspace accounts
-URL Fetch calls: 20,000 / day for consumer accounts, 100,000 / day for Google Workspace accounts
+```bash
+cd app
+npm run validate:ui
 ```
 
-参照:
+この検証は次を確認する。
 
-- https://developers.google.com/apps-script/guides/triggers/installable
-- https://developers.google.com/apps-script/guides/services/quotas
+- `index.html` が `styles.html` と `scripts.html` を include している
+- `index.html` に module script / DuckDB import / inline style がない
+- UI 操作に必要な id / class / data attribute が存在する
+- `styles.html` に `.correlation-table-wrap` が定義されている
 
-## 失敗時の扱い
+## 既知の制約
 
-更新失敗時は `metadata.last_refresh_status = failed` と `metadata.last_refresh_error` を記録する。
-
-`staging` の書き込みまたは検証で失敗した場合、`active` は前回成功時の内容を維持する。`active` への copy 中に失敗した場合は、`active` が途中状態になる可能性がある。
-
-記録する metadata:
-
-```text
-last_refresh_status = failed
-last_refresh_error = error message
-last_refresh_trigger_type = daily or manual
-last_refresh_finished_at = failure timestamp
-```
-
-## ディレクトリ構成
-
-```text
-app/
-  appsscript.json
-  code.gs
-  refresh.gs
-  spreadsheet.gs
-  youtube.gs
-  index.html
-  styles.html
-  scripts.html
-  package.json
-```
+- production CSV への書き込みは atomic ではない。
+- `peak_concurrent_viewers` は YouTube Data API から過去最大同接を取得できないため、現在は空文字になる。
+- Web App は anonymous access 設定のため、表示してよい情報だけを Drive CSV に含める。
+- Drive folder 内で同名 file が重複すると読み取り・更新に失敗する。
