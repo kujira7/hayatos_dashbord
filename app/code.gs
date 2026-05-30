@@ -1,4 +1,3 @@
-const DRIVE_ROOT_FOLDER_ID = '1aJKQVs4vofOl-i9qfCbdjNXwGFkZA8vq';
 const CHANNEL_HANDLE = '@hayayabo';
 const VIDEO_CSV_FILE_NAME = 'hayato_live_videos.csv';
 const STAGING_VIDEO_CSV_FILE_NAME = 'hayato_live_videos.staging.csv';
@@ -7,6 +6,7 @@ const MAX_CSV_BYTES = 9500000;
 const CSV_MIME_TYPE = MimeType.CSV;
 const JSON_MIME_TYPE = 'application/json';
 const YOUTUBE_API_BASE_URL = 'https://www.googleapis.com/youtube/v3';
+const DRIVE_ROOT_FOLDER_ID_PROPERTY = 'DRIVE_ROOT_FOLDER_ID';
 const YOUTUBE_API_KEY_PROPERTY = 'YOUTUBE_API_KEY';
 
 const UI_REQUIRED_COLUMNS = [
@@ -55,4 +55,14 @@ function doGet() {
 
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+
+function getRequiredScriptProperty(propertyName) {
+  const value = PropertiesService.getScriptProperties().getProperty(propertyName);
+
+  if (!value) {
+    throw new Error(`Script property is required. name=${propertyName}`);
+  }
+
+  return value;
 }

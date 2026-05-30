@@ -39,7 +39,6 @@ app/
   styles.html         # Web App CSS
   scripts.html        # DuckDB-Wasm、IndexedDB cache、画面制御
   appsscript.json     # Apps Script manifest
-  package.json        # clasp / validation scripts
 tools/
   validate-ui-contract.mjs
 ```
@@ -48,8 +47,10 @@ tools/
 
 データは Spreadsheet ではなく、Google Drive folder 内の CSV / JSON file として保存する。
 
+保存先 folder id は Apps Script の Script properties で設定する。
+
 ```text
-DRIVE_ROOT_FOLDER_ID = 1aJKQVs4vofOl-i9qfCbdjNXwGFkZA8vq
+DRIVE_ROOT_FOLDER_ID = <your-drive-folder-id>
 VIDEO_CSV_FILE_NAME = hayato_live_videos.csv
 STAGING_VIDEO_CSV_FILE_NAME = hayato_live_videos.staging.csv
 METADATA_JSON_FILE_NAME = hayato_live_metadata.json
@@ -59,16 +60,17 @@ METADATA_JSON_FILE_NAME = hayato_live_metadata.json
 
 ## 必須設定
 
-Apps Script の Script properties に YouTube Data API key を設定する。
+Apps Script の Script properties には次を設定する。
 
 ```text
+DRIVE_ROOT_FOLDER_ID
 YOUTUBE_API_KEY
 ```
 
-未設定の場合、`fetchYouTubeDataset()` は次の error で失敗する。
+未設定の場合、該当処理は次の error で失敗する。
 
 ```text
-Script property is required. name=YOUTUBE_API_KEY
+Script property is required. name=<property-name>
 ```
 
 ## データ取得
@@ -185,19 +187,6 @@ cache がある場合は先に cache から描画し、`getDatasetManifest()` �
 
 ## Apps Script
 
-`app/.clasp.json` は次の Apps Script project を指す。
-
-```text
-SCRIPT_ID = 1jdiOHw9-1M-4aFZA5RS9qYK5FvCpYiSWq46chMEMu_-LhK6TnQQ7kN2b
-```
-
-Web App deployment:
-
-```text
-DEPLOYMENT_ID = AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc
-URL = https://script.google.com/macros/s/AKfycbz5NZOqMrrSRD2eq-W2tam6rcwL-bhXv6wXnW47qte7o4C9RI5swgFyJrA7bU6gDLc/exec
-```
-
 `appsscript.json` の Web App 設定:
 
 ```text
@@ -209,18 +198,12 @@ timeZone = Asia/Tokyo
 
 ## 開発コマンド
 
-`app/` directory で実行する。
+UI contract の最低限の検証:
 
 ```bash
-npm run validate:ui
-npm run gas:status
-npm run gas:push
-npm run gas:deploy
-npm run gas:url
-npm run gas:release
+cd app
+node ../tools/validate-ui-contract.mjs
 ```
-
-`gas:*` commands は `mise exec npm:@google/clasp -- clasp ...` を使う。
 
 ## 検証
 
@@ -228,7 +211,7 @@ UI contract の最低限の検証:
 
 ```bash
 cd app
-npm run validate:ui
+node ../tools/validate-ui-contract.mjs
 ```
 
 この検証は次を確認する。

@@ -242,7 +242,7 @@ function parseCsvLine(line) {
 }
 
 function writeDriveFile(fileName, content, mimeType) {
-  const folder = DriveApp.getFolderById(DRIVE_ROOT_FOLDER_ID);
+  const folder = getDriveRootFolder();
   const file = getOnlyDriveFileByNameOrNull(fileName);
 
   if (file) {
@@ -264,7 +264,7 @@ function getOnlyDriveFileByName(fileName) {
 }
 
 function getOnlyDriveFileByNameOrNull(fileName) {
-  const folder = DriveApp.getFolderById(DRIVE_ROOT_FOLDER_ID);
+  const folder = getDriveRootFolder();
   const files = folder.getFilesByName(fileName);
 
   if (!files.hasNext()) {
@@ -278,4 +278,8 @@ function getOnlyDriveFileByNameOrNull(fileName) {
   }
 
   return file;
+}
+
+function getDriveRootFolder() {
+  return DriveApp.getFolderById(getRequiredScriptProperty(DRIVE_ROOT_FOLDER_ID_PROPERTY));
 }

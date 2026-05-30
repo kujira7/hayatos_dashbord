@@ -141,13 +141,7 @@ function youtubeGet(path, params, apiKey) {
 }
 
 function getRequiredYouTubeApiKey() {
-  const apiKey = PropertiesService.getScriptProperties().getProperty(YOUTUBE_API_KEY_PROPERTY);
-
-  if (!apiKey) {
-    throw new Error(`Script property is required. name=${YOUTUBE_API_KEY_PROPERTY}`);
-  }
-
-  return apiKey;
+  return getRequiredScriptProperty(YOUTUBE_API_KEY_PROPERTY);
 }
 
 function dedupeByVideoId(items) {

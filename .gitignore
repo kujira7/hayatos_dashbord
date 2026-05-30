@@ -4,5 +4,7 @@
 !.env.example
 node_modules/
 .clasprc.json
+app/.clasp.json
+app/package.json
 *.log
 logs/
