@@ -1,6 +1,7 @@
   <script type="module">
     import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';
 
+    // Constants / state
     const CSV_PATH = 'videos.csv';
     const CACHE_DB_NAME = 'hayato-live-dashboard';
     const CACHE_STORE_NAME = 'datasets';
@@ -130,6 +131,7 @@
       correlationPoints: []
     };
 
+    // Common utilities
     function setStatus(message, options = {}) {
       const { type = 'loading', autoHideMs = type === 'success' ? 2000 : 0 } = options;
       const status = $('#status');
@@ -169,6 +171,7 @@
       });
     }
 
+    // Dataset cache
     function openDatasetCache() {
       return new Promise((resolve, reject) => {
         if (!('indexedDB' in window)) {
@@ -270,49 +273,7 @@
       );
     }
 
-    function formatMs(value) {
-      if (!Number.isFinite(value)) {
-        return '-';
-      }
-
-      return `${Math.round(value).toLocaleString('ja-JP')}ms`;
-    }
-
-    async function measureTiming(timings, label, operation) {
-      const start = performance.now();
-
-      try {
-        return await operation();
-      } finally {
-        timings[label] = performance.now() - start;
-      }
-    }
-
-    function logLoadTimings(timings, dataset) {
-      const payload = {
-        client: Object.fromEntries(
-          Object.entries(timings).map(([key, value]) => [key, Math.round(value)])
-        ),
-        server: dataset?.serverTimingsMs || {},
-        csvBytes: dataset?.csvBytes,
-        dataRowCount: dataset?.dataRowCount
-      };
-
-      console.info('Initial load timings', payload);
-    }
-
-    function formatLoadTimingStatus(timings, dataset) {
-      const gasTotal = timings.getDatasetCsv ?? timings.getDatasetManifest;
-      const serverTotal = dataset?.serverTimingsMs?.total;
-
-      return [
-        `total ${formatMs(timings.total)}`,
-        `GAS ${formatMs(gasTotal)}`,
-        `server ${formatMs(serverTotal)}`,
-        `DuckDB ${formatMs(timings.createDuckDB)}`
-      ].join(' / ');
-    }
-
+    // DuckDB / SQL helpers
     async function createDuckDB() {
       const bundles = duckdb.getJsDelivrBundles();
       const bundle = await duckdb.selectBundle(bundles);
@@ -340,6 +301,7 @@
       return String(value).replace(/'/g, "''");
     }
 
+    // Format / SQL helpers
     function getCategoryFilter(value) {
       return CATEGORY_FILTERS[value] || CATEGORY_FILTERS['category:all'];
     }
@@ -499,6 +461,7 @@
       return value || '通常動画';
     }
 
+    // List view
     function renderRows(rows) {
       if (rows.length === 0) {
         $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">表示できる動画がありません。</td></tr>';
@@ -682,6 +645,7 @@
       renderPager();
     }
 
+    // BI controls / filters
     async function createBiView() {
       await state.conn.query(`
         CREATE OR REPLACE VIEW videos_bi AS
@@ -1066,6 +1030,7 @@
       return denominator === 0 ? null : numerator / denominator;
     }
 
+    // Chart drawing
     function formatAxisTick(value, metric) {
       if (metric === 'duration_sec_num') return formatDuration(value);
       if (metric === 'published_hour_num') return formatHour(value);
@@ -1453,10 +1418,9 @@
       renderTopVideos(visiblePoints, xMetric, yMetric);
     }
 
+    // Dataset refresh
     async function loadSpreadsheet(options = {}) {
       const { clearCache = false } = options;
-      const timings = {};
-      const totalStart = performance.now();
       let renderedFromCache = false;
 
       setDatasetControlsDisabled(true);
@@ -1470,54 +1434,46 @@
 
         if (clearCache) {
           setStatus('キャッシュをクリアして再読み込み中...', { type: 'loading' });
-          await measureTiming(timings, 'clearCache', () => clearCachedDataset());
+          await clearCachedDataset();
         }
 
         const cachedRecord = clearCache
           ? null
-          : await measureTiming(timings, 'readCache', () => readCachedDataset());
+          : await readCachedDataset();
 
         if (cachedRecord) {
           setStatus('キャッシュから表示中。最新確認中...', { type: 'loading' });
           const cachedDataset = cachedRecordToDataset(cachedRecord);
-          const db = state.db || await measureTiming(timings, 'createDuckDB', () => createDuckDB());
+          const db = state.db || await createDuckDB();
 
           state.db = db;
-          await loadDatasetIntoDuckDB(cachedDataset, timings);
-          timings.total = performance.now() - totalStart;
+          await loadDatasetIntoDuckDB(cachedDataset);
           renderedFromCache = true;
-          logLoadTimings(timings, cachedDataset);
-          setStatus(`キャッシュから表示中。最新確認中。${formatLoadTimingStatus(timings, cachedDataset)}`, { type: 'loading' });
+          setStatus('キャッシュから表示中。最新確認中。', { type: 'loading' });
         }
 
         const manifest = renderedFromCache
-          ? await measureTiming(timings, 'getDatasetManifest', () => gasRun('getDatasetManifest'))
+          ? await gasRun('getDatasetManifest')
           : null;
 
         if (renderedFromCache && isCachedDatasetFresh(cachedRecord, manifest)) {
-          timings.total = performance.now() - totalStart;
-          state.dataset.serverTimingsMs = manifest.serverTimingsMs;
-          logLoadTimings(timings, state.dataset);
-          setStatus(`最新確認済み。${formatLoadTimingStatus(timings, state.dataset)}`, { type: 'success' });
+          setStatus('最新確認済み。', { type: 'success' });
           return;
         }
 
         setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...', { type: 'loading' });
-        const datasetPromise = measureTiming(timings, 'getDatasetCsv', () => gasRun('getDatasetCsv'));
+        const datasetPromise = gasRun('getDatasetCsv');
         const dbPromise = state.db
           ? Promise.resolve(state.db)
-          : measureTiming(timings, 'createDuckDB', () => createDuckDB());
+          : createDuckDB();
         const [dataset, db] = await Promise.all([datasetPromise, dbPromise]);
 
         state.db = db;
-        timings.createDuckDB = timings.createDuckDB || 0;
 
-        await loadDatasetIntoDuckDB(dataset, timings);
-        await measureTiming(timings, 'writeCache', () => writeCachedDataset(dataset));
+        await loadDatasetIntoDuckDB(dataset);
+        await writeCachedDataset(dataset);
 
-        timings.total = performance.now() - totalStart;
-        logLoadTimings(timings, dataset);
-        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。${formatLoadTimingStatus(timings, dataset)}`, { type: 'success' });
+        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。`, { type: 'success' });
       } finally {
         if (state.conn) {
           renderPager();
@@ -1527,35 +1483,35 @@
       }
     }
 
-    async function loadDatasetIntoDuckDB(dataset, timings) {
+    async function loadDatasetIntoDuckDB(dataset) {
       if (state.conn) {
         await state.conn.close();
         state.conn = null;
       }
 
       setStatus('CSVをDuckDB-Wasmに登録中...', { type: 'loading' });
-      await measureTiming(timings, 'registerFileText', () => state.db.registerFileText(CSV_PATH, dataset.csv));
+      await state.db.registerFileText(CSV_PATH, dataset.csv);
 
       setStatus('DuckDB connectionを作成中...', { type: 'loading' });
-      state.conn = await measureTiming(timings, 'connect', () => state.db.connect());
+      state.conn = await state.db.connect();
 
       setStatus('read_csv_autoでviewを作成中...', { type: 'loading' });
-      await measureTiming(timings, 'createVideosView', () => state.conn.query(`
+      await state.conn.query(`
         CREATE OR REPLACE VIEW videos AS
         SELECT *
         FROM read_csv_auto('${CSV_PATH}', header = true)
-      `));
-      await measureTiming(timings, 'createBiView', () => createBiView());
+      `);
+      await createBiView();
 
       state.dataset = dataset;
 
-      await measureTiming(timings, 'refreshCounts', () => refreshCounts());
-      await measureTiming(timings, 'refreshFilterOptions', () => refreshFilterOptions());
+      await refreshCounts();
+      await refreshFilterOptions();
       $('#live-filter').value = state.filterValue;
       renderCorrelationTemplates();
-      await measureTiming(timings, 'refreshBiFilterOptions', () => refreshBiFilterOptions());
-      await measureTiming(timings, 'renderPage', () => renderPage(1));
-      await measureTiming(timings, 'renderCorrelation', () => renderCorrelation());
+      await refreshBiFilterOptions();
+      await renderPage(1);
+      await renderCorrelation();
     }
 
     async function refreshFromYouTube() {
@@ -1831,6 +1787,7 @@
       });
     }
 
+    // Event binding
     function initializeApp() {
       bindDatasetEvents();
       bindNavigationEvents();
