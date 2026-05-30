@@ -202,6 +202,14 @@
       }
     }
 
+    async function clearCachedDataset() {
+      try {
+        await withDatasetCache('readwrite', (store) => store.delete(CACHE_KEY));
+      } catch (error) {
+        console.warn('Dataset cache clear failed.', error);
+      }
+    }
+
     function cachedRecordToDataset(record) {
       return {
         csvFile: record.csvFile,
@@ -1422,7 +1430,8 @@
       renderTopVideos(visiblePoints, xMetric, yMetric);
     }
 
-    async function loadSpreadsheet() {
+    async function loadSpreadsheet(options = {}) {
+      const { clearCache = false } = options;
       const timings = {};
       const totalStart = performance.now();
       let renderedFromCache = false;
@@ -1440,7 +1449,14 @@
           state.conn = null;
         }
 
-        const cachedRecord = await measureTiming(timings, 'readCache', () => readCachedDataset());
+        if (clearCache) {
+          setStatus('キャッシュをクリアして再読み込み中...', { type: 'loading' });
+          await measureTiming(timings, 'clearCache', () => clearCachedDataset());
+        }
+
+        const cachedRecord = clearCache
+          ? null
+          : await measureTiming(timings, 'readCache', () => readCachedDataset());
 
         if (cachedRecord) {
           setStatus('キャッシュから表示中。最新確認中...', { type: 'loading' });
@@ -1577,7 +1593,7 @@
     }
 
     $('#load-button').addEventListener('click', () => {
-      loadSpreadsheet().catch(handleError);
+      loadSpreadsheet({ clearCache: true }).catch(handleError);
     });
 
     $('#refresh-button').addEventListener('click', () => {
