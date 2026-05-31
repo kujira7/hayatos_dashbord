@@ -35,7 +35,7 @@ function refreshDataset(options) {
 
     const csv = objectsToCsv(VIDEO_COLUMNS, dataset.rows);
     writeCsvFile(STAGING_VIDEO_CSV_FILE_NAME, csv);
-    writeCsvFile(VIDEO_CSV_FILE_NAME, csv);
+    replaceProductionCsvFromStaging(STAGING_VIDEO_CSV_FILE_NAME, VIDEO_CSV_FILE_NAME);
 
     const finishedAt = new Date();
     const nextMetadata = {

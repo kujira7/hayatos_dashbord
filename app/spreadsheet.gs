@@ -159,6 +159,27 @@ function writeCsvFile(fileName, csv) {
   return writeDriveFile(fileName, csv, CSV_MIME_TYPE);
 }
 
+function replaceProductionCsvFromStaging(stagingFileName, productionFileName) {
+  const folder = getDriveRootFolder();
+  const stagingFile = getOnlyDriveFileByName(stagingFileName);
+  validateDriveCsvFile(stagingFile, stagingFileName);
+
+  const productionFile = getOnlyDriveFileByNameOrNull(productionFileName);
+
+  // Avoid setContent() on production: a partial CSV can be read as valid data.
+  if (productionFile) {
+    productionFile.setTrashed(true);
+  }
+
+  const copiedFile = stagingFile.makeCopy(productionFileName, folder);
+  validateDriveCsvFile(copiedFile, productionFileName);
+  return copiedFile;
+}
+
+function validateDriveCsvFile(file, fileName) {
+  validateCsv(file.getBlob().getDataAsString(), fileName);
+}
+
 function validateCsv(csv, fileName) {
   const csvBytes = getCsvBytes(csv);
 
@@ -266,15 +287,20 @@ function getOnlyDriveFileByName(fileName) {
 function getOnlyDriveFileByNameOrNull(fileName) {
   const folder = getDriveRootFolder();
   const files = folder.getFilesByName(fileName);
+  let file = null;
 
-  if (!files.hasNext()) {
-    return null;
-  }
+  while (files.hasNext()) {
+    const nextFile = files.next();
 
-  const file = files.next();
+    if (nextFile.isTrashed()) {
+      continue;
+    }
 
-  if (files.hasNext()) {
-    throw new Error(`Duplicate Drive file name. name=${fileName}`);
+    if (file) {
+      throw new Error(`Duplicate Drive file name. name=${fileName}`);
+    }
+
+    file = nextFile;
   }
 
   return file;

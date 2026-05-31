@@ -45,6 +45,18 @@ const VIDEO_COLUMNS = [
   'fetched_at'
 ];
 
+const SCRIPT_PARTIALS = [
+  'scripts_state',
+  'scripts_common',
+  'scripts_cache',
+  'scripts_data',
+  'scripts_list',
+  'scripts_bi_filters',
+  'scripts_chart',
+  'scripts_dataset',
+  'scripts_events'
+];
+
 function doGet() {
   return HtmlService
     .createTemplateFromFile('index')
@@ -66,15 +78,11 @@ function includeRaw(filename) {
 }
 
 function includeScripts() {
-  const html = includeRaw('scripts').replace(
-    /<\?!= includeRaw\('([^']+)'\); \?>/g,
-    function(_match, partialName) {
-      return getScriptPartialContent(partialName);
-    }
-  );
-  const source = html
-    .replace(/^  <script type="module">\n/, '')
-    .replace(/\n  <\/script>\n?$/, '');
+  const source = [
+    "import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/+esm';",
+    '',
+    SCRIPT_PARTIALS.map(getScriptPartialContent).join('\n\n')
+  ].join('\n');
   const encoded = Utilities.base64Encode(source, Utilities.Charset.UTF_8);
 
   return [

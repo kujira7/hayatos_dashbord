@@ -37,7 +37,6 @@ app/
   spreadsheet.gs      # Drive CSV / metadata JSON 読み書き
   index.html          # Web App HTML
   styles.html         # Web App CSS
-  scripts.html        # Browser JS partial 読み込み順
   scripts_*.html      # Browser JS partial
   appsscript.json     # Apps Script manifest
 tools/
@@ -85,14 +84,23 @@ Script property is required. name=<property-name>
 3. `/videos` を 50 件ずつ呼び、動画詳細を取得する。
 4. CSV に正規化する。
 5. staging CSV を書く。
-6. production CSV を書く。
-7. metadata JSON を更新する。
+6. staging CSV を読み戻して validate する。
+7. production CSV を staging CSV から置き換える。
+8. metadata JSON を更新する。
 
 同時実行は `LockService.getScriptLock()` で制御する。lock を取れない場合は待ち続けず、次の error で失敗する。
 
 ```text
 Refresh is already running.
 ```
+
+### CSV 更新方針
+
+production CSV は `setContent()` で直接上書きしない。
+
+書き込み途中の partial CSV が Web App に成功扱いで読まれることを避けるため。読み取り頻度は低く、一時的な file not found は許容する。一方で、壊れた CSV を成功として表示することは避ける。
+
+更新は staging CSV を書き、読み戻して validate した後、production CSV を staging から置き換える。これは atomic update ではない。
 
 ## CSV schema
 
@@ -160,7 +168,7 @@ uploads_playlist_id
 
 ## Web App
 
-Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` と `scripts.html` は `include()` で読み込む。
+Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` は HTML file として読み込み、Browser JS は `include('scripts')` で生成する。
 
 画面:
 
@@ -175,7 +183,7 @@ Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` と
 
 Browser 側は `@duckdb/duckdb-wasm@1.29.0` を jsDelivr から import し、`read_csv_auto('videos.csv', header = true)` で view を作る。
 
-Browser JS は外部 build なしで分割する。`scripts.html` は partial の読み込み順だけを持ち、実体は `scripts_*.html` に置く。Apps Script の template engine は script 内の `<` を escape するため、`scripts_*.html` は次の wrapper で JS 本文を保持する。
+Browser JS は外部 build なしで分割する。読み込み順は `code.gs` の `SCRIPT_PARTIALS` に定義し、実体は `scripts_*.html` に置く。Apps Script の template engine は script 内の `<` を escape するため、`scripts_*.html` は次の wrapper で JS 本文を保持する。
 
 ```html
 <script type="application/json" data-dashboard-script-partial>
@@ -185,12 +193,12 @@ Browser JS は外部 build なしで分割する。`scripts.html` は partial �
 
 `code.gs` の `include('scripts')` は次を行う。
 
-1. `scripts.html` に書かれた `includeRaw('scripts_*')` を読む。
+1. `SCRIPT_PARTIALS` の順に `scripts_*.html` を読む。
 2. 各 partial の wrapper から JS 本文だけを抜く。
 3. 連結した module JS を base64 encode する。
 4. Browser で decode し、`<script type="module">` として注入する。
 
-この設計は Apps Script editor へのコピペ再現性を優先する。`scripts_*.html` の wrapper と `scripts.html` の読み込み順は検証対象なので、変更後は UI contract を実行する。
+この設計は Apps Script editor へのコピペ再現性を優先する。`scripts_*.html` の wrapper と `SCRIPT_PARTIALS` は検証対象なので、変更後は UI contract を実行する。
 
 IndexedDB cache:
 
@@ -234,11 +242,11 @@ node ../tools/validate-ui-contract.mjs
 
 この検証は次を確認する。
 
-- `index.html` が `styles.html` と `scripts.html` を include している
+- `index.html` が `styles.html` と Browser JS を include している
 - `index.html` に module script / DuckDB import / inline style がない
 - UI 操作に必要な id / class / data attribute が存在する
 - `styles.html` に `.correlation-table-wrap` が定義されている
-- `scripts.html` が `scripts_*.html` を定義順で `includeRaw()` している
+- `code.gs` の `SCRIPT_PARTIALS` と `scripts_*.html` が一致している
 - `scripts_*.html` が JS partial wrapper 形式になっている
 - partial 展開後の module script に template directive が残っていない
 - partial 展開後の module script に escaped operator が混入していない
@@ -246,7 +254,7 @@ node ../tools/validate-ui-contract.mjs
 
 ## 既知の制約
 
-- production CSV への書き込みは atomic ではない。
+- production CSV の置き換えは atomic ではない。
 - `peak_concurrent_viewers` は YouTube Data API から過去最大同接を取得できないため、現在は空文字になる。
 - Web App は anonymous access 設定のため、表示してよい情報だけを Drive CSV に含める。
 - Drive folder 内で同名 file が重複すると読み取り・更新に失敗する。
