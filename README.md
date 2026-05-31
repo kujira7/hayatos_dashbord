@@ -37,7 +37,8 @@ app/
   spreadsheet.gs      # Drive CSV / metadata JSON 読み書き
   index.html          # Web App HTML
   styles.html         # Web App CSS
-  scripts.html        # DuckDB-Wasm、IndexedDB cache、画面制御
+  scripts.html        # Browser JS partial 読み込み順
+  scripts_*.html      # Browser JS partial
   appsscript.json     # Apps Script manifest
 tools/
   validate-ui-contract.mjs
@@ -174,6 +175,23 @@ Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` と
 
 Browser 側は `@duckdb/duckdb-wasm@1.29.0` を jsDelivr から import し、`read_csv_auto('videos.csv', header = true)` で view を作る。
 
+Browser JS は外部 build なしで分割する。`scripts.html` は partial の読み込み順だけを持ち、実体は `scripts_*.html` に置く。Apps Script の template engine は script 内の `<` を escape するため、`scripts_*.html` は次の wrapper で JS 本文を保持する。
+
+```html
+<script type="application/json" data-dashboard-script-partial>
+  // JS body
+</script>
+```
+
+`code.gs` の `include('scripts')` は次を行う。
+
+1. `scripts.html` に書かれた `includeRaw('scripts_*')` を読む。
+2. 各 partial の wrapper から JS 本文だけを抜く。
+3. 連結した module JS を base64 encode する。
+4. Browser で decode し、`<script type="module">` として注入する。
+
+この設計は Apps Script editor へのコピペ再現性を優先する。`scripts_*.html` の wrapper と `scripts.html` の読み込み順は検証対象なので、変更後は UI contract を実行する。
+
 IndexedDB cache:
 
 ```text
@@ -220,6 +238,11 @@ node ../tools/validate-ui-contract.mjs
 - `index.html` に module script / DuckDB import / inline style がない
 - UI 操作に必要な id / class / data attribute が存在する
 - `styles.html` に `.correlation-table-wrap` が定義されている
+- `scripts.html` が `scripts_*.html` を定義順で `includeRaw()` している
+- `scripts_*.html` が JS partial wrapper 形式になっている
+- partial 展開後の module script に template directive が残っていない
+- partial 展開後の module script に escaped operator が混入していない
+- partial 展開後の module script が構文として有効である
 
 ## 既知の制約
 

@@ -131,6 +131,9 @@
       ['duration-start', 'duration-end'].forEach((id) => {
         $(`#${id}`).addEventListener('input', () => {
           updateDurationSliderLabels();
+        });
+
+        $(`#${id}`).addEventListener('change', () => {
           rerenderCorrelation();
         });
       });
@@ -155,6 +158,9 @@
       ['published-date-start', 'published-date-end'].forEach((id) => {
         $(`#${id}`).addEventListener('input', () => {
           updatePublishedDateSliderLabels();
+        });
+
+        $(`#${id}`).addEventListener('change', () => {
           rerenderCorrelation();
         });
       });
