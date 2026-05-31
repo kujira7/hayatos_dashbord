@@ -7,8 +7,12 @@ const appDir = path.join(repoDir, 'app');
 const read = (fileName) => fs.readFileSync(path.join(appDir, fileName), 'utf8');
 
 const indexHtml = read('index.html');
-const scriptsHtml = read('scripts.html');
 const stylesHtml = read('styles.html');
+const scriptsHtml = fs.readdirSync(appDir)
+  .filter((fileName) => fileName === 'scripts.html' || /^scripts_.*\.html$/.test(fileName))
+  .sort()
+  .map(read)
+  .join('\n');
 
 const failures = [];
 

@@ -1,0 +1,386 @@
+<script type="application/json" data-dashboard-script-partial>
+    // BI controls / filters
+    async function createBiView() {
+      await state.conn.query(`
+        CREATE OR REPLACE VIEW videos_bi AS
+        WITH base AS (
+          SELECT
+            *,
+            try_cast(view_count AS DOUBLE) AS view_count_num,
+            try_cast(like_count AS DOUBLE) AS like_count_num,
+            try_cast(comment_count AS DOUBLE) AS comment_count_num,
+            try_cast(duration_sec AS DOUBLE) AS duration_sec_num,
+            try_cast(peak_concurrent_viewers AS DOUBLE) AS peak_concurrent_viewers_num,
+            cast(published_at AS VARCHAR) AS published_at_text,
+            try_cast(substr(cast(published_at AS VARCHAR), 1, 10) AS DATE) AS published_date,
+            try_cast(substr(cast(published_at AS VARCHAR), 12, 2) AS INTEGER) AS published_hour_num
+          FROM videos
+        ),
+        enriched AS (
+          SELECT
+            *,
+            ${VIDEO_TYPE_SQL.bi} AS video_type,
+            CASE
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 3600 THEN 'LIVE 1h未満'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 7200 THEN 'LIVE 1-2h'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' AND COALESCE(duration_sec_num, 0) < 14400 THEN 'LIVE 2-4h'
+              WHEN COALESCE(live_type, '') LIKE '%LIVE%' THEN 'LIVE 4h+'
+              WHEN COALESCE(duration_sec_num, 999999) <= 60 THEN 'Shorts'
+              WHEN COALESCE(duration_sec_num, 0) < 600 THEN '通常 0-10m'
+              WHEN COALESCE(duration_sec_num, 0) < 1200 THEN '通常 10-20m'
+              WHEN COALESCE(duration_sec_num, 0) < 2400 THEN '通常 20-40m'
+              ELSE '通常 40m+'
+            END AS duration_bucket,
+            substr(published_at_text, 1, 7) AS published_month,
+            substr(published_at_text, 1, 4) AS published_year
+          FROM base
+        )
+        SELECT
+          *
+        FROM enriched
+      `);
+    }
+
+    function initializeBiControls() {
+      const metricOptions = Object.entries(BI_METRICS)
+        .map(([value, metric]) => `<option value="${value}">${escapeHtml(metric.label)}</option>`)
+        .join('');
+
+      $('#x-metric').innerHTML = metricOptions;
+      $('#y-metric').innerHTML = metricOptions;
+      applyCorrelationTemplate(CORRELATION_TEMPLATES[0], false);
+      renderCorrelationTemplates();
+    }
+
+    async function refreshBiFilterOptions() {
+      const durationRows = arrowRows(await state.conn.query(`
+        SELECT
+          floor(min(duration_sec_num))::VARCHAR AS min_duration,
+          ceil(max(duration_sec_num))::VARCHAR AS max_duration
+        FROM videos_bi
+        WHERE duration_sec_num IS NOT NULL
+      `));
+      const dateRows = arrowRows(await state.conn.query(`
+        SELECT cast(published_date AS VARCHAR) AS published_date_text
+        FROM videos_bi
+        WHERE published_date IS NOT NULL
+        GROUP BY published_date
+        ORDER BY published_date
+      `));
+      const yearRows = arrowRows(await state.conn.query(`
+        SELECT published_year, count(*)::VARCHAR AS count
+        FROM videos_bi
+        WHERE published_year IS NOT NULL
+        GROUP BY published_year
+        ORDER BY published_year DESC
+      `));
+      const hourRows = arrowRows(await state.conn.query(`
+        SELECT published_hour_num, count(*)::VARCHAR AS count
+        FROM videos_bi
+        WHERE published_hour_num IS NOT NULL
+        GROUP BY published_hour_num
+        ORDER BY published_hour_num
+      `));
+
+      state.publishedDateValues = dateRows.map((row) => row.published_date_text).filter(Boolean);
+      state.durationRange = durationRows.length === 0
+        ? null
+        : {
+          min: Number(durationRows[0].min_duration || 0),
+          max: Number(durationRows[0].max_duration || 0)
+        };
+
+      resetDurationFilter();
+      resetPublishedDateFilter();
+
+      $('#published-year-filter').innerHTML = [
+        '<option value="">ALL</option>',
+        ...yearRows.map((row) => {
+          const value = escapeHtml(row.published_year || '');
+          const label = `${row.published_year || '-'} (${Number(row.count).toLocaleString('ja-JP')})`;
+          return `<option value="${value}">${escapeHtml(label)}</option>`;
+        })
+      ].join('');
+      $('#published-hour-filter').innerHTML = [
+        '<option value="">ALL</option>',
+        ...hourRows.map((row) => {
+          const value = escapeHtml(row.published_hour_num ?? '');
+          const label = `${formatHour(row.published_hour_num)} (${Number(row.count).toLocaleString('ja-JP')})`;
+          return `<option value="${value}">${escapeHtml(label)}</option>`;
+        })
+      ].join('');
+    }
+
+    function resetDurationFilter() {
+      const start = $('#duration-start');
+      const end = $('#duration-end');
+
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) {
+        start.disabled = true;
+        end.disabled = true;
+        $('#duration-start-label').value = '-';
+        $('#duration-end-label').value = '-';
+        updateRangeFill('duration', 0, 0, 0, 0);
+        return;
+      }
+
+      [start, end].forEach((slider) => {
+        slider.min = String(state.durationRange.min);
+        slider.max = String(state.durationRange.max);
+        slider.step = '60';
+        slider.disabled = false;
+      });
+      start.value = String(state.durationRange.min);
+      end.value = String(state.durationRange.max);
+      updateDurationSliderLabels();
+    }
+
+    function getDurationRange() {
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) return null;
+
+      const start = Math.min(Number($('#duration-start').value), Number($('#duration-end').value));
+      const end = Math.max(Number($('#duration-start').value), Number($('#duration-end').value));
+      return { start, end };
+    }
+
+    function updateDurationSliderLabels() {
+      const range = getDurationRange();
+
+      if (!range) {
+        $('#duration-start-label').value = '-';
+        $('#duration-end-label').value = '-';
+        updateRangeFill('duration', 0, 0, 0, 0);
+        return;
+      }
+
+      $('#duration-start-label').value = formatDuration(range.start);
+      $('#duration-end-label').value = formatDuration(range.end);
+      updateRangeFill('duration', state.durationRange.min, state.durationRange.max, range.start, range.end);
+    }
+
+    function resetPublishedDateFilter() {
+      const start = $('#published-date-start');
+      const end = $('#published-date-end');
+      const maxIndex = state.publishedDateValues.length - 1;
+
+      if (maxIndex <= 0) {
+        start.disabled = true;
+        end.disabled = true;
+        $('#published-date-start-label').value = state.publishedDateValues[0] || '-';
+        $('#published-date-end-label').value = state.publishedDateValues[0] || '-';
+        updateRangeFill('published-date', 0, 0, 0, 0);
+        return;
+      }
+
+      [start, end].forEach((slider) => {
+        slider.min = '0';
+        slider.max = String(maxIndex);
+        slider.step = '1';
+        slider.disabled = false;
+      });
+      start.value = '0';
+      end.value = String(maxIndex);
+      updatePublishedDateSliderLabels();
+    }
+
+    function getPublishedDateRange() {
+      if (state.publishedDateValues.length === 0) return null;
+
+      const startIndex = Math.min(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const endIndex = Math.max(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      return {
+        start: state.publishedDateValues[startIndex],
+        end: state.publishedDateValues[endIndex]
+      };
+    }
+
+    function updatePublishedDateSliderLabels() {
+      const range = getPublishedDateRange();
+      const startIndex = Math.min(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const endIndex = Math.max(Number($('#published-date-start').value), Number($('#published-date-end').value));
+      const maxIndex = Math.max(0, state.publishedDateValues.length - 1);
+
+      $('#published-date-start-label').value = range?.start || '-';
+      $('#published-date-end-label').value = range?.end || '-';
+      updateRangeFill('published-date', 0, maxIndex, startIndex, endIndex);
+    }
+
+    function setDurationFromInput(targetId) {
+      if (!state.durationRange || state.durationRange.max <= state.durationRange.min) return;
+
+      const input = $(`#${targetId}-label`);
+      const slider = $(`#${targetId}`);
+      const parsed = parseDurationInput(input.value);
+
+      if (parsed === null) {
+        updateDurationSliderLabels();
+        return;
+      }
+
+      const value = Math.max(state.durationRange.min, Math.min(state.durationRange.max, parsed));
+      slider.value = String(value);
+      updateDurationSliderLabels();
+      rerenderCorrelation();
+    }
+
+    function findNearestPublishedDateIndex(dateText) {
+      if (state.publishedDateValues.length === 0) return -1;
+
+      let bestIndex = 0;
+      let bestDistance = Infinity;
+      const targetTime = new Date(`${dateText}T00:00:00`).getTime();
+
+      state.publishedDateValues.forEach((candidate, index) => {
+        const distance = Math.abs(new Date(`${candidate}T00:00:00`).getTime() - targetTime);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+
+      return bestIndex;
+    }
+
+    function setPublishedDateFromInput(targetId) {
+      const input = $(`#${targetId}-label`);
+      const slider = $(`#${targetId}`);
+      const parsed = parsePublishedDateInput(input.value);
+
+      if (parsed === null) {
+        updatePublishedDateSliderLabels();
+        return;
+      }
+
+      const index = findNearestPublishedDateIndex(parsed);
+      if (index < 0) {
+        updatePublishedDateSliderLabels();
+        return;
+      }
+
+      slider.value = String(index);
+      updatePublishedDateSliderLabels();
+      rerenderCorrelation();
+    }
+
+    function updateRangeFill(prefix, min, max, start, end) {
+      const fill = $(`#${prefix}-range-fill`);
+      const span = max - min;
+
+      if (!fill || span <= 0) {
+        if (fill) {
+          fill.style.left = '0%';
+          fill.style.right = '0%';
+        }
+        return;
+      }
+
+      const left = ((start - min) / span) * 100;
+      const right = 100 - (((end - min) / span) * 100);
+      fill.style.left = `${Math.max(0, Math.min(100, left))}%`;
+      fill.style.right = `${Math.max(0, Math.min(100, right))}%`;
+    }
+
+    function renderCorrelationTemplates() {
+      $('#correlation-templates').innerHTML = CORRELATION_TEMPLATES.map((template) => `
+        <button
+          class="template-card ${template.id === state.activeCorrelationTemplate ? 'active' : ''}"
+          type="button"
+          data-template-id="${escapeHtml(template.id)}"
+        >
+          <span class="template-title">${escapeHtml(template.title)}</span>
+          <span class="template-meta">${escapeHtml(template.meta)}</span>
+        </button>
+      `).join('');
+    }
+
+    function applyCorrelationTemplate(template, shouldRender = true) {
+      state.activeCorrelationTemplate = template.id;
+      $('#x-metric').value = template.x;
+      $('#y-metric').value = template.y;
+      $('#color-metric').value = template.color;
+      $('#bi-filter').value = template.filter;
+      renderCorrelationTemplates();
+
+      if (shouldRender && state.conn) {
+        rerenderCorrelation();
+      }
+    }
+
+    function markCorrelationTemplateCustom() {
+      state.activeCorrelationTemplate = '';
+      renderCorrelationTemplates();
+    }
+
+    function rerenderCorrelation() {
+      renderCorrelation().catch(handleError);
+    }
+
+    function getBiWhereSql(xMetric, yMetric) {
+      const conditions = [
+        `${xMetric} IS NOT NULL`,
+        `${yMetric} IS NOT NULL`
+      ];
+      const filterValue = $('#bi-filter').value;
+      const categoryCondition = getCategoryFilter(filterValue).biCondition;
+      const durationRange = getDurationRange();
+      const publishedDateRange = getPublishedDateRange();
+      const publishedYear = $('#published-year-filter').value;
+      const publishedHour = $('#published-hour-filter').value;
+      const keyword = $('#bi-keyword').value.trim();
+
+      if (categoryCondition) {
+        conditions.push(categoryCondition);
+      }
+
+      if (keyword) {
+        conditions.push(`title ILIKE '%${sqlString(keyword)}%'`);
+      }
+
+      if (durationRange) {
+        conditions.push(`duration_sec_num BETWEEN ${durationRange.start} AND ${durationRange.end}`);
+      }
+
+      if (publishedDateRange) {
+        conditions.push(`published_date BETWEEN DATE '${sqlString(publishedDateRange.start)}' AND DATE '${sqlString(publishedDateRange.end)}'`);
+      }
+
+      if (publishedYear) {
+        conditions.push(`published_year = '${sqlString(publishedYear)}'`);
+      }
+
+      if (publishedHour) {
+        conditions.push(`published_hour_num = ${Number(publishedHour)}`);
+      }
+
+      return `WHERE ${conditions.join(' AND ')}`;
+    }
+
+    function getMetricValue(value) {
+      const number = Number(value);
+
+      if (!Number.isFinite(number)) return null;
+
+      return number;
+    }
+
+    function calculatePearson(points) {
+      if (points.length < 2) return null;
+
+      const meanX = points.reduce((sum, point) => sum + point.xPlot, 0) / points.length;
+      const meanY = points.reduce((sum, point) => sum + point.yPlot, 0) / points.length;
+      let numerator = 0;
+      let sumX = 0;
+      let sumY = 0;
+
+      points.forEach((point) => {
+        const dx = point.xPlot - meanX;
+        const dy = point.yPlot - meanY;
+        numerator += dx * dy;
+        sumX += dx * dx;
+        sumY += dy * dy;
+      });
+
+      const denominator = Math.sqrt(sumX * sumY);
+      return denominator === 0 ? null : numerator / denominator;
+    }
+</script>

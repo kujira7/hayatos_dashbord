@@ -1,0 +1,103 @@
+<script type="application/json" data-dashboard-script-partial>
+    // Dataset cache
+    function openDatasetCache() {
+      return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) {
+          reject(new Error('IndexedDB is not available.'));
+          return;
+        }
+
+        const request = indexedDB.open(CACHE_DB_NAME, 1);
+
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore(CACHE_STORE_NAME, { keyPath: 'key' });
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function withDatasetCache(mode, operation) {
+      const db = await openDatasetCache();
+
+      try {
+        return await new Promise((resolve, reject) => {
+          const transaction = db.transaction(CACHE_STORE_NAME, mode);
+          const store = transaction.objectStore(CACHE_STORE_NAME);
+          const request = operation(store);
+
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+      } finally {
+        db.close();
+      }
+    }
+
+    async function readCachedDataset() {
+      try {
+        const record = await withDatasetCache('readonly', (store) => store.get(CACHE_KEY));
+
+        if (!record || record.cacheSchemaVersion !== CACHE_SCHEMA_VERSION || !record.csv) {
+          return null;
+        }
+
+        return record;
+      } catch (error) {
+        console.warn('Dataset cache read failed.', error);
+        return null;
+      }
+    }
+
+    async function writeCachedDataset(dataset) {
+      try {
+        await withDatasetCache('readwrite', (store) => store.put({
+          key: CACHE_KEY,
+          cacheSchemaVersion: CACHE_SCHEMA_VERSION,
+          csvFile: dataset.csvFile,
+          metadata: dataset.metadata,
+          rowCountIncludingHeader: dataset.rowCountIncludingHeader,
+          dataRowCount: dataset.dataRowCount,
+          columnCount: dataset.columnCount,
+          csvBytes: dataset.csvBytes,
+          csv: dataset.csv,
+          cachedAt: new Date().toISOString()
+        }));
+      } catch (error) {
+        console.warn('Dataset cache write failed.', error);
+      }
+    }
+
+    async function clearCachedDataset() {
+      try {
+        await withDatasetCache('readwrite', (store) => store.delete(CACHE_KEY));
+      } catch (error) {
+        console.warn('Dataset cache clear failed.', error);
+      }
+    }
+
+    function cachedRecordToDataset(record) {
+      return {
+        csvFile: record.csvFile,
+        metadata: record.metadata,
+        rowCountIncludingHeader: record.rowCountIncludingHeader,
+        dataRowCount: record.dataRowCount,
+        columnCount: record.columnCount,
+        csvBytes: record.csvBytes,
+        csv: record.csv,
+        cache: {
+          cachedAt: record.cachedAt
+        }
+      };
+    }
+
+    function isCachedDatasetFresh(cacheRecord, manifest) {
+      return Boolean(
+        cacheRecord &&
+        manifest &&
+        cacheRecord.csvFile?.id === manifest.csvFile?.id &&
+        cacheRecord.csvFile?.lastUpdated === manifest.csvFile?.lastUpdated &&
+        Number(cacheRecord.csvBytes) === Number(manifest.csvBytes)
+      );
+    }
+</script>

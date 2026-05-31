@@ -1,0 +1,218 @@
+<script type="application/json" data-dashboard-script-partial>
+    function bindDatasetEvents() {
+      $('#load-button').addEventListener('click', () => {
+        loadSpreadsheet({ clearCache: true }).catch(handleError);
+      });
+
+      $('#refresh-button').addEventListener('click', () => {
+        refreshFromYouTube().catch((error) => handleError(error, false));
+      });
+
+      document.querySelectorAll('[data-page-action]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const delta = button.dataset.pageAction === 'prev' ? -1 : 1;
+          renderPage(state.currentPage + delta).catch(handleError);
+        });
+      });
+
+      $('#page-size-select').addEventListener('change', () => {
+        state.pageSize = Number($('#page-size-select').value);
+        state.currentPage = 1;
+        if (!state.conn) return;
+
+        refreshCounts()
+          .then(() => renderPage(1))
+          .catch(handleError);
+      });
+
+      $('#live-filter').addEventListener('change', () => {
+        state.filterValue = $('#live-filter').value;
+        state.currentPage = 1;
+
+        refreshCounts()
+          .then(() => renderPage(1))
+          .catch(handleError);
+      });
+
+      document.querySelectorAll('th[data-sort-key]').forEach((header) => {
+        header.addEventListener('click', () => {
+          if (!state.conn) return;
+
+          const key = header.dataset.sortKey;
+          if (!SORT_COLUMNS[key]) return;
+
+          if (state.sortKey === key) {
+            state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
+          } else {
+            state.sortKey = key;
+            state.sortDirection = SORT_COLUMNS[key].defaultDirection;
+          }
+
+          state.currentPage = 1;
+          renderSortHeaders();
+          renderPage(1).catch(handleError);
+        });
+
+        header.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            event.currentTarget.click();
+          }
+        });
+      });
+    }
+
+    function bindNavigationEvents() {
+      document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+        item.addEventListener('click', () => {
+          selectFilter(item.dataset.filter);
+        });
+
+        item.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            selectFilter(item.dataset.filter);
+          }
+        });
+      });
+
+      document.querySelectorAll('.nav-item[data-view]').forEach((item) => {
+        item.addEventListener('click', () => {
+          switchView(item.dataset.view);
+        });
+
+        item.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            switchView(item.dataset.view);
+          }
+        });
+      });
+
+      $('#bi-list-button').addEventListener('click', () => {
+        switchView('list');
+      });
+    }
+
+    function bindCorrelationEvents() {
+      $('#correlation-templates').addEventListener('click', (event) => {
+        const button = event.target.closest('[data-template-id]');
+        if (!button) return;
+
+        const template = CORRELATION_TEMPLATES.find((item) => item.id === button.dataset.templateId);
+        if (template) {
+          applyCorrelationTemplate(template);
+        }
+      });
+
+      $('#run-correlation').addEventListener('click', () => {
+        markCorrelationTemplateCustom();
+        rerenderCorrelation();
+      });
+
+      ['x-metric', 'y-metric', 'color-metric', 'plot-mode'].forEach((id) => {
+        $(`#${id}`).addEventListener('change', () => {
+          markCorrelationTemplateCustom();
+          rerenderCorrelation();
+        });
+      });
+
+      ['bi-filter', 'published-year-filter', 'published-hour-filter'].forEach((id) => {
+        $(`#${id}`).addEventListener('change', () => {
+          markCorrelationTemplateCustom();
+          rerenderCorrelation();
+        });
+      });
+
+      $('#bi-keyword').addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          rerenderCorrelation();
+        }
+      });
+
+      ['duration-start', 'duration-end'].forEach((id) => {
+        $(`#${id}`).addEventListener('input', () => {
+          updateDurationSliderLabels();
+          rerenderCorrelation();
+        });
+      });
+
+      ['duration-start', 'duration-end'].forEach((id) => {
+        $(`#${id}-label`).addEventListener('change', () => {
+          setDurationFromInput(id);
+        });
+
+        $(`#${id}-label`).addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          }
+        });
+      });
+
+      $('#clear-duration-filter').addEventListener('click', () => {
+        resetDurationFilter();
+        rerenderCorrelation();
+      });
+
+      ['published-date-start', 'published-date-end'].forEach((id) => {
+        $(`#${id}`).addEventListener('input', () => {
+          updatePublishedDateSliderLabels();
+          rerenderCorrelation();
+        });
+      });
+
+      ['published-date-start', 'published-date-end'].forEach((id) => {
+        $(`#${id}-label`).addEventListener('change', () => {
+          setPublishedDateFromInput(id);
+        });
+
+        $(`#${id}-label`).addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          }
+        });
+      });
+
+      $('#clear-published-date-filter').addEventListener('click', () => {
+        resetPublishedDateFilter();
+        rerenderCorrelation();
+      });
+
+      $('#tbody').addEventListener('click', openVideoUrlFromEvent);
+      $('#tbody').addEventListener('keydown', openVideoUrlFromEvent);
+      $('#correlation-top-videos').addEventListener('click', openVideoUrlFromEvent);
+
+      $('#correlation-canvas').addEventListener('click', (event) => {
+        const hit = findCorrelationPoint(event);
+
+        if (hit?.videoUrl) {
+          window.open(hit.videoUrl, '_blank', 'noopener');
+        }
+      });
+
+      $('#correlation-canvas').addEventListener('mousemove', (event) => {
+        const hit = findCorrelationPoint(event);
+
+        if (hit) {
+          event.currentTarget.style.cursor = hit.videoUrl ? 'pointer' : 'default';
+          showCorrelationTooltip(event, hit);
+        } else {
+          event.currentTarget.style.cursor = 'default';
+          hideCorrelationTooltip();
+        }
+      });
+
+      $('#correlation-canvas').addEventListener('mouseleave', () => {
+        hideCorrelationTooltip();
+      });
+    }
+
+    // Event binding
+    function initializeApp() {
+      bindDatasetEvents();
+      bindNavigationEvents();
+      bindCorrelationEvents();
+      initializeBiControls();
+      loadSpreadsheet().catch(handleError);
+    }
+
+    initializeApp();
+</script>

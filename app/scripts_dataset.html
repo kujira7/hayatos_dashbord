@@ -1,0 +1,164 @@
+<script type="application/json" data-dashboard-script-partial>
+    // Dataset refresh
+    async function loadSpreadsheet(options = {}) {
+      const { clearCache = false } = options;
+      let renderedFromCache = false;
+
+      setDatasetControlsDisabled(true);
+      $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込み中...</td></tr>';
+
+      try {
+        if (state.conn) {
+          await state.conn.close();
+          state.conn = null;
+        }
+
+        if (clearCache) {
+          setStatus('キャッシュをクリアして再読み込み中...', { type: 'loading' });
+          await clearCachedDataset();
+        }
+
+        const cachedRecord = clearCache
+          ? null
+          : await readCachedDataset();
+
+        if (cachedRecord) {
+          setStatus('キャッシュから表示中。最新確認中...', { type: 'loading' });
+          const cachedDataset = cachedRecordToDataset(cachedRecord);
+          const db = state.db || await createDuckDB();
+
+          state.db = db;
+          await loadDatasetIntoDuckDB(cachedDataset);
+          renderedFromCache = true;
+          setStatus('キャッシュから表示中。最新確認中。', { type: 'loading' });
+        }
+
+        const manifest = renderedFromCache
+          ? await gasRun('getDatasetManifest')
+          : null;
+
+        if (renderedFromCache && isCachedDatasetFresh(cachedRecord, manifest)) {
+          setStatus('最新確認済み。', { type: 'success' });
+          return;
+        }
+
+        setStatus(renderedFromCache ? '更新データを読み込み中...' : 'CSV読み込みとDuckDB-Wasm初期化中...', { type: 'loading' });
+        const datasetPromise = gasRun('getDatasetCsv');
+        const dbPromise = state.db
+          ? Promise.resolve(state.db)
+          : createDuckDB();
+        const [dataset, db] = await Promise.all([datasetPromise, dbPromise]);
+
+        state.db = db;
+
+        await loadDatasetIntoDuckDB(dataset);
+        await writeCachedDataset(dataset);
+
+        setStatus(`OK: ${state.filteredCount.toLocaleString('ja-JP')} 件を読み込みました。`, { type: 'success' });
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        setDatasetControlsDisabled(false);
+      }
+    }
+
+    async function loadDatasetIntoDuckDB(dataset) {
+      if (state.conn) {
+        await state.conn.close();
+        state.conn = null;
+      }
+
+      setStatus('CSVをDuckDB-Wasmに登録中...', { type: 'loading' });
+      await state.db.registerFileText(CSV_PATH, dataset.csv);
+
+      setStatus('DuckDB connectionを作成中...', { type: 'loading' });
+      state.conn = await state.db.connect();
+
+      setStatus('read_csv_autoでviewを作成中...', { type: 'loading' });
+      await state.conn.query(`
+        CREATE OR REPLACE VIEW videos AS
+        SELECT *
+        FROM read_csv_auto('${CSV_PATH}', header = true)
+      `);
+      await createBiView();
+
+      state.dataset = dataset;
+
+      await refreshCounts();
+      await refreshFilterOptions();
+      $('#live-filter').value = state.filterValue;
+      renderCorrelationTemplates();
+      await refreshBiFilterOptions();
+      await renderPage(1);
+      await renderCorrelation();
+    }
+
+    async function refreshFromYouTube() {
+      setDatasetControlsDisabled(true);
+
+      try {
+        setStatus('YouTubeから全データ再取得中...', { type: 'loading' });
+        await gasRun('manualRefresh');
+        await loadSpreadsheet();
+      } finally {
+        if (state.conn) {
+          renderPager();
+        }
+
+        setDatasetControlsDisabled(false);
+      }
+    }
+
+    function handleError(error, clearRows = true) {
+      console.error(error);
+      setStatus(`ERROR: ${error.message || error}`, { type: 'error' });
+
+      if (clearRows) {
+        $('#tbody').innerHTML = '<tr><td class="empty" colspan="8">読み込みに失敗しました。</td></tr>';
+      }
+    }
+
+    function switchView(viewName) {
+      state.currentView = viewName;
+      $('#list-view').classList.toggle('view-hidden', viewName !== 'list');
+      $('#bi-view').classList.toggle('view-hidden', viewName !== 'bi');
+      document.querySelectorAll('.nav-item[data-view]').forEach((item) => {
+        item.classList.toggle('active', item.dataset.view === viewName);
+      });
+
+      if (viewName === 'bi') {
+        document.querySelectorAll('.nav-item[data-filter]').forEach((item) => {
+          item.classList.remove('active');
+        });
+        rerenderCorrelation();
+      } else {
+        renderCounts();
+      }
+    }
+
+    function openVideoUrlFromEvent(event) {
+      if (event.type === 'keydown' && event.key !== 'Enter') return;
+
+      const row = event.target.closest('tr[data-video-url]');
+      const url = row?.dataset.videoUrl;
+
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+      }
+    }
+
+    function selectFilter(value) {
+      if (!state.conn) return;
+
+      state.filterValue = value;
+      state.currentPage = 1;
+      $('#live-filter').value = value;
+      switchView('list');
+
+      refreshCounts()
+        .then(() => renderPage(1))
+        .catch(handleError);
+    }
+</script>

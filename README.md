@@ -170,7 +170,7 @@ Apps Script Web App は `doGet()` で `index.html` を返す。`styles.html` と
 - BI dashboard
 - correlation scatter / density plot
 - YouTube から全データ再取得
-- Spreadsheet 再読み込みボタン名は残っているが、実体は Drive CSV 再読み込み
+- CSV 再読み込みボタンは Drive CSV を再読み込み
 
 Browser 側は `@duckdb/duckdb-wasm@1.29.0` を jsDelivr から import し、`read_csv_auto('videos.csv', header = true)` で view を作る。
 
