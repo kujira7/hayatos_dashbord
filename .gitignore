@@ -8,3 +8,4 @@ app/.clasp.json
 app/package.json
 *.log
 logs/
+.agents/worktree/
